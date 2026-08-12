@@ -14,6 +14,8 @@ extern uint8_t  DDRC, PORTC, MCUSR;
 extern uint16_t TCNT1, TCCR1A, TCCR1B, TIMSK1;
 
 #define PC0 0
+#define PC1 1
+#define PC2 2
 
 /* Timer1 prescaler bits */
 #define CS10 0
