@@ -93,6 +93,15 @@
    halting is the safe direction. Set the register to 0 only with a
    documented reason.
 
+   HEALTH is ALSO open for the first SETTLE_SAMPLES (~2 s) after reset,
+   while the trip test is suppressed and the device cannot detect
+   anything. An unarmed protective device is not a healthy one. This is
+   not a fault: it sets nothing in reg 61, never engages the arrest,
+   and clears itself. Reg 49 bit 6 is the pollable form of it.
+   BEWARE: a PLC that treats health-open as a hard stop will refuse to
+   start for ~2 s after a sensor reset. See the arming-window section
+   of docs/REGISTER_MAP_CTX311.md.
+
    NOT IMPLEMENTED, DELIBERATELY: the ADXL345 electrostatic SELF_TEST.
    It deflects the axes, which perturbs the very signal that operates
    the arrest device, so it must never run online. Running it at boot
@@ -1432,10 +1441,26 @@ static void runDiagnostics(uint16_t measuredRate)
      a fault ALSO trips the arrest output: a dead detection channel
      means the protective function is gone, and halting is the safe
      direction. losByFault records WHY, so the master can tell a
-     genuine event from a self-diagnosis.                          */
-  if (faultFlags) {
+     genuine event from a self-diagnosis.
+
+     Health ALSO opens while the detector is still arming. For the first
+     SETTLE_SAMPLES the trip test is suppressed, so the device cannot
+     operate the arrest at all -- and a protective function that cannot
+     act is not a healthy one. Closing PC2 through that window would
+     tell a PLC the assembly is protected during the one window in which
+     it provably is not.
+
+     Arming is NOT a fault: it never engages the arrest, it sets no
+     flag in register 61, and it clears itself. That is why the arrest
+     branch below stays keyed on faultFlags rather than on this test.
+     Register 49 bit 6 is the pollable form of the distinction.     */
+  uint16_t sCount;
+  ATOMIC_BLOCK(ATOMIC_RESTORESTATE) { sCount = settleCount; }
+  bool arming = (sCount < SETTLE_SAMPLES);
+
+  if (faultFlags || arming) {
     PORTC &= ~(1 << HEALTH_PORT_BIT);
-    if (losFaultAction && (faultFlags & FAULT_DETECTION_LOST)) {
+    if (faultFlags && losFaultAction && (faultFlags & FAULT_DETECTION_LOST)) {
       ATOMIC_BLOCK(ATOMIC_RESTORESTATE) {
         if (!losLatched) {
           PORTC &= ~(1 << LOS_PORT_BIT);
@@ -1658,7 +1683,7 @@ static void publishBlock()
 
   /* ---------------- CTX311 registers, map version 9 --------------- */
   uint8_t  lLat, lAct, lFault;
-  uint16_t lCount, lRun;
+  uint16_t lCount, lRun, sCount;
   uint32_t lMin2, rawLive;
   ATOMIC_BLOCK(ATOMIC_RESTORESTATE) {
     lLat   = losLatched;
@@ -1668,6 +1693,7 @@ static void publishBlock()
     lRun   = losRunSamples;
     lMin2  = losMinMag2;
     rawLive = rawMag2Live;
+    sCount = settleCount;
   }
 
   uint16_t minMg = (lMin2 == 0xFFFFFFFFUL) ? 0
@@ -1697,6 +1723,11 @@ static void publishBlock()
   if (reachedFreeFall)             lst |= 0x08;
   if (holdingRegs[PeakMagHoldReg] >= 26000U) lst |= 0x10;  /* clipped */
   if (lFault)                      lst |= 0x20;
+  /* bit6 says the detector is NOT yet armed. It is the positive form of
+     what PC2 going open during settle means, so a master that polls
+     rather than watching the pin can tell "still arming" from "faulted"
+     -- both open the health output, but only one of them is a defect. */
+  if (sCount < SETTLE_SAMPLES)     lst |= 0x40;
 
   holdingRegs[LosStatusReg]       = lst;
   holdingRegs[LosThresholdEffReg] = losThresholdMg;
@@ -1776,15 +1807,22 @@ void setup()
 
   Serial.begin(baud);
 
-  /* All three outputs driven, all set to the SAFE/HEALTHY level.
+  /* All three outputs driven. The two trip outputs start SAFE.
      Note what this cannot do: on power loss these pins go high
      impedance, not low. The fail-safe direction depends on an
      external pull-down and on the arrest device engaging when
-     de-energised. See the header -- confirm on hardware.         */
+     de-energised. See the header -- confirm on hardware.
+
+     HEALTH starts OPEN, not healthy. settleCount is zero here, so the
+     detector is not armed and runDiagnostics() would open PC2 on its
+     first pass anyway. Driving it HIGH first would put a brief
+     "healthy" pulse on the pin during the one window in which the
+     device is provably not protecting anything -- short, but long
+     enough for a PLC scan to sample it and latch a start permit. */
   DDRC  |= (1 << OUTPUT_PORT_BIT) | (1 << LOS_PORT_BIT) |
            (1 << HEALTH_PORT_BIT);
-  PORTC |= (1 << OUTPUT_PORT_BIT) | (1 << LOS_PORT_BIT) |
-           (1 << HEALTH_PORT_BIT);
+  PORTC |=  (1 << OUTPUT_PORT_BIT) | (1 << LOS_PORT_BIT);
+  PORTC &= ~(1 << HEALTH_PORT_BIT);
 
   loadConfig();
 

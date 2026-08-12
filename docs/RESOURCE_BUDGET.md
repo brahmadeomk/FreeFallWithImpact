@@ -18,6 +18,9 @@ source.
 The estimate was low. Measured below: **1042 B for CTX311**, 68 % above
 the estimate.
 
+Figures below include the T-05 arming-window change (+50 B flash, no
+SRAM change).
+
 ## Figures
 
 Arduino Nano, ATmega328P, 16 MHz. 32256 B flash available to the sketch
@@ -25,14 +28,14 @@ Arduino Nano, ATmega328P, 16 MHz. 32256 B flash available to the sketch
 
 | | CTX310 rev H | CTX311 rev A |
 |---|---:|---:|
-| Flash (`.text` + `.data`) | 14678 B (44.8 %) | 17580 B (53.6 %) |
+| Flash (`.text` + `.data`) | 14678 B (44.8 %) | 17630 B (53.8 %) |
 | Static SRAM (`.data` + `.bss`) | 916 B (44.7 %) | **1042 B (50.9 %)** |
 | Free SRAM (static) | 1132 B (55 %) | **1006 B (49 %)** |
-| `.text` | 14620 B | 17514 B |
+| `.text` | 14620 B | 17564 B |
 | `.data` | 58 B | 66 B |
 | `.bss` | 858 B | 976 B |
 
-CTX311 costs **+2902 B flash and +126 B static SRAM** over CTX310. The
+CTX311 costs **+2952 B flash and +126 B static SRAM** over CTX310. The
 SRAM delta is mostly the raised `BUFFER_SIZE` (128 → 160, +32 B) plus the
 loss-of-support state and the extra registers.
 

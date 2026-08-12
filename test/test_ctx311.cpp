@@ -523,6 +523,21 @@ static void armed()
   PORTC |= (1 << LOS_PORT_BIT);
 }
 
+/* Same as armed(), but left INSIDE the settle window. setup() does not
+   zero settleCount -- on a real part power-on reset does it, but these
+   tests share one process, so a previous armed() would otherwise leak
+   an armed detector into a test about arming. */
+static void arming()
+{
+  bootFresh();
+  settleCount = 0;
+  losLatched = 0; losCount = 0; losTripCount = 0;
+  losMinMag2 = 0xFFFFFFFFUL;
+  PORTC |= (1 << LOS_PORT_BIT);
+  cfgWasDefaulted = false;   /* isolate arming from the defaulted-EEPROM fault */
+  faultFlags = 0;
+}
+
 static void test_los_trips_below_threshold()
 {
   printf("LOS: sustained loss of support trips the arrest output\n");
@@ -770,6 +785,89 @@ static void test_impact_threshold_floor_raised()
            "a 500 mg impact threshold is rejected");
 }
 
+/* ===================================================================== */
+/*  the arming window  --  reg 49 bit 6 and the health output            */
+/* ===================================================================== */
+
+static void test_health_is_open_while_arming()
+{
+  printf("arming: health is OPEN until the detector is armed\n");
+  arming();
+
+  /* Straight out of setup(), before any diagnostics pass has run. If
+     setup() drove PC2 healthy and left runDiagnostics() to open it,
+     there would be a brief healthy pulse on the pin at power-up -- long
+     enough for a PLC scan to sample it and latch a start permit. */
+  CHECK(!(PORTC & (1 << HEALTH_PORT_BIT)),
+        "health is open from the moment setup() returns");
+
+  /* Part way through the settle window: no fault, but not armed. */
+  feedLive(256, 200);
+  runDiagnostics(1589);
+
+  CHECK_EQ(faultFlags, 0, "arming raises no fault");
+  CHECK(!(PORTC & (1 << HEALTH_PORT_BIT)),
+        "health is open while still arming");
+  /* The whole point: an unarmed detector must not also be engaging the
+     arrest. Health open says "do not rely on me yet", not "stop". */
+  CHECK(PORTC & (1 << LOS_PORT_BIT),
+        "arming does not engage the arrest output");
+  CHECK(!losLatched, "arming does not latch a loss-of-support trip");
+
+  publishBlock();
+  CHECK(holdingRegs[LosStatusReg] & 0x40,
+        "reg 49 bit 6 reports still arming");
+}
+
+static void test_health_closes_once_armed()
+{
+  printf("arming: health closes when the detector arms\n");
+  arming();
+
+  /* Cross the settle boundary. SETTLE_SAMPLES is counted in the ISR,
+     so this drives it the same way the part would. */
+  feedLive(256, SETTLE_SAMPLES + 10);
+  runDiagnostics(1589);
+
+  CHECK_EQ(faultFlags, 0, "a healthy unit arms without a fault");
+  CHECK(PORTC & (1 << HEALTH_PORT_BIT),
+        "health closes once armed");
+
+  publishBlock();
+  CHECK(!(holdingRegs[LosStatusReg] & 0x40),
+        "reg 49 bit 6 clears once armed");
+}
+
+static void test_arming_is_distinguishable_from_a_fault()
+{
+  printf("arming: a master can tell arming from a fault\n");
+
+  /* Both open PC2. Only one of them is a defect, and register 61 plus
+     register 49 bit 6 are what separate them -- this is the reading a
+     PLC integrator is most likely to get wrong. */
+  arming();
+  feedLive(256, 200);
+  runDiagnostics(1589);
+  publishBlock();
+  bool armingOpen  = !(PORTC & (1 << HEALTH_PORT_BIT));
+  bool armingBit   = holdingRegs[LosStatusReg] & 0x40;
+  uint16_t armingFaults = holdingRegs[FaultReg];
+
+  armed();
+  faultFlags = 0;
+  cfgWasDefaulted = true;          /* an advisory fault */
+  feedLive(256, 100);
+  runDiagnostics(1589);
+  publishBlock();
+  bool faultOpen = !(PORTC & (1 << HEALTH_PORT_BIT));
+  bool faultBit  = holdingRegs[LosStatusReg] & 0x40;
+
+  CHECK(armingOpen && faultOpen, "both conditions open health");
+  CHECK_EQ(armingFaults, 0, "arming reports no fault in reg 61");
+  CHECK(armingBit,  "arming sets reg 49 bit 6");
+  CHECK(!faultBit,  "a fault after arming leaves reg 49 bit 6 clear");
+}
+
 static void test_status_bit2_removed()
 {
   printf("CTX311: status bit 2 removed -- it was a permanent fault light\n");
@@ -816,6 +914,9 @@ int main()
   test_plausibility_suspended_during_an_event();
   test_cannot_rearm_while_faulted();
   test_impact_threshold_floor_raised();
+  test_health_is_open_while_arming();
+  test_health_closes_once_armed();
+  test_arming_is_distinguishable_from_a_fault();
   test_status_bit2_removed();
 
   printf("\n%d checks, %d failures\n", checks, failures);

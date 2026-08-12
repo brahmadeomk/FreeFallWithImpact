@@ -33,6 +33,47 @@ engaging when de-energised. Confirm both on hardware.
 **Monitor PC2 in the PLC and treat it as a stop condition.** A sensor
 that has lost its detection channel is not a sensor.
 
+## The arming window — read this before commissioning
+
+**For the first ~2 s after power-up or reset the device cannot detect
+anything, and PC2 (health) is OPEN throughout.**
+
+Loss-of-support detection is suppressed for `SETTLE_SAMPLES` = 3200
+samples at the fixed 1600 Hz sample rate, so the assembly is
+**unprotected by this device for about two seconds** after every reset.
+The suppression exists because the DC path needs to settle; a detector
+armed on its first samples would trip on its own start-up transient.
+
+Health is held open through that window deliberately. An unarmed
+protective device is not a healthy one, and the alternative — closing
+PC2 while the trip test is suppressed — tells the PLC the assembly is
+protected during the one window in which it provably is not.
+
+**Telling arming apart from a fault.** Both open PC2, and only one is a
+defect:
+
+| Condition | PC2 | Reg 49 bit 6 | Reg 61 | Arrest (PC1) |
+|---|---|---|---|---|
+| Still arming | open | **1** | 0 | released |
+| Faulted | open | 0 | non-zero | depends on reg 63 |
+| Armed and healthy | closed | 0 | 0 | released |
+
+Arming never engages the arrest, never sets a fault flag, and clears
+itself. Poll register 49 bit 6 if you need the distinction without
+watching the pin.
+
+**⚠ This changes power-up behaviour, and it may stop the machine.** If
+your PLC treats health-open as a hard stop, the machine will now refuse
+to start for ~2 s after a sensor reset, where a previous build would
+have let it run. That is the intended reading — the device genuinely
+cannot protect anything yet — but it is a behavioural change to plan
+for, not to discover on site. Sequence the PLC to wait for reg 49 bit 6
+to clear, or accept the 2 s delay.
+
+**If the assembly can be under load during that window, the arrest is
+unprotected through it.** No firmware setting closes that gap; it is a
+commissioning question about whether a reset can occur under load.
+
 ## What CTX310 users must know before reflashing
 
 | Change | Consequence |
@@ -70,7 +111,7 @@ device's own engagement time to every figure.
 
 | Reg | Name | Access | Units / notes |
 |---|---|---|---|
-| 49 | LOS status | R | bit0 latched, bit1 active now, bit2 impact followed, bit3 reached free-fall depth, bit4 impact clipped, **bit5 tripped by fault, not by an event** |
+| 49 | LOS status | R | bit0 latched, bit1 active now, bit2 impact followed, bit3 reached free-fall depth, bit4 impact clipped, **bit5 tripped by fault, not by an event**, **bit6 still arming — detection suppressed, health open** |
 | 50 | LOS threshold | **R/W** | mg, 200–980, default 850 |
 | 51 | LOS threshold effective | R | echo of 50 |
 | 52 | LOS confirm time | **R/W** | ms, 5–500, default 25 |
