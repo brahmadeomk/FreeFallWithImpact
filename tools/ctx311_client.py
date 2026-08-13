@@ -188,6 +188,9 @@ def connect(port, slave_id, baudrate=9600, timeout=1.0):
 READ_CHUNK = 0
 READ_RETRIES = 3
 
+# Set from --port so the advice names the port the tester actually used.
+PORT_HINT = "/dev/ttyUSB0"
+
 
 def read_all(instrument):
     """Read the whole map, retrying on a corrupted frame.
@@ -237,14 +240,21 @@ def describe_read_failure(exc):
             "at the wrong address. Things that cause it, in the order worth",
             "checking:",
             "",
-            "  1. Power. A Raspberry Pi showing an undervoltage warning will",
-            "     corrupt serial traffic. Fix that first -- it invalidates",
-            "     every other measurement you take.",
-            "  2. RS-485 wiring: A/B swapped or marginal, missing 120 ohm",
+            "  1. SOMETHING ELSE HAS THE PORT OPEN. This is the usual cause",
+            "     and it does not look like it. Two readers on one port each",
+            "     steal bytes from the other, so both see fragmented frames",
+            "     and blame the wiring. Check with:",
+            "         fuser -v %s        (or: lsof %s)" % (PORT_HINT, PORT_HINT),
+            "     A capture still running in another window, a second Thonny",
+            "     tab, or a leftover process from the last run all do it.",
+            "  2. Power. A Raspberry Pi showing an undervoltage warning will",
+            "     corrupt serial traffic, and it invalidates every other",
+            "     measurement taken while it is happening.",
+            "  3. RS-485 wiring: A/B swapped or marginal, missing 120 ohm",
             "     termination at both ends, or no bias resistors.",
-            "  3. Frame length. A full sweep is 133 bytes; one bad bit loses",
+            "  4. Frame length. A full sweep is 133 bytes; one bad bit loses",
             "     all of it. Retry with --chunk 16 to use short frames.",
-            "  4. Ground. RS-485 needs a common reference, not just A and B.",
+            "  5. Ground. RS-485 needs a common reference, not just A and B.",
         ]
     elif "o response" in text or "imeout" in text:
         lines += [
@@ -516,7 +526,8 @@ def main(argv=None):
 
     args = parser.parse_args(argv)
 
-    global READ_CHUNK, READ_RETRIES
+    global READ_CHUNK, READ_RETRIES, PORT_HINT
+    PORT_HINT = args.port
     READ_CHUNK = max(0, args.chunk)
     READ_RETRIES = max(1, args.retries)
 

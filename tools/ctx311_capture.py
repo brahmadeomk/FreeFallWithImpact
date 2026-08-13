@@ -244,6 +244,7 @@ def main(argv=None):
 
     ctx.READ_CHUNK = max(0, args.chunk)
     ctx.READ_RETRIES = max(1, args.retries)
+    ctx.PORT_HINT = args.port
 
     # Same refusal as the client. Capturing a map-8 device would produce
     # a CSV that looks valid and is not.

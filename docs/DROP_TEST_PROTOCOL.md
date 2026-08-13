@@ -88,12 +88,21 @@ A checksum error means the device **answered** and the reply was
 corrupted in transit. It is not a wrong address and not a dead device —
 those give you a timeout instead. Check, in this order:
 
-1. **Power.** A Raspberry Pi showing an undervoltage warning corrupts
+1. **Something else has the port open.** This is the usual cause and it
+   does not look like one. Two programs reading one serial port each
+   steal bytes from the other, so both see fragmented frames and both
+   blame the wiring. A capture still running in another window, a second
+   Thonny tab, or a leftover process from the previous run will all do
+   it. Check with `fuser -v /dev/ttyUSB0` or `lsof /dev/ttyUSB0`.
+2. **Power.** A Raspberry Pi showing an undervoltage warning corrupts
    serial traffic. Fix that before trusting any drop data taken on it.
-2. **RS-485 wiring** — A/B swapped, 120 Ω termination missing at either
+3. **RS-485 wiring** — A/B swapped, 120 Ω termination missing at either
    end, or no bias resistors.
-3. **Frame length** — retry with `--chunk 16` to use short frames.
-4. **Ground** — RS-485 needs a common reference, not just A and B.
+4. **Frame length** — retry with `--chunk 16` to use short frames.
+5. **Ground** — RS-485 needs a common reference, not just A and B.
+
+> Recorded because it cost time once: a checksum error on this rig was a
+> shared port, not the line. The wiring and the supply were both fine.
 
 `--chunk` is a fallback, not the default, and it costs something real:
 chunks are separate requests, so the register block can change between
