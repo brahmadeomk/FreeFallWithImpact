@@ -364,7 +364,7 @@
 #include <util/atomic.h>
 #include <avr/wdt.h>
 #include "SimpleModbusSlave.h"
-#include "SparkFun_ADXL345-master/mFFT_SparkFun_ADXL345.cpp"
+#include "SparkFun_ADXL345-master/SparkFun_ADXL345.cpp"
 
 /* ------------------------- configuration --------------------------- */
 /* Outputs. All ACTIVE LOW: driven HIGH = safe/healthy, pulled LOW to
@@ -477,7 +477,9 @@
 #define BOOT_PASS     1
 #define BOOT_FAIL     2
 
+#ifndef ADXL345_INT_DATA_READY_BIT   /* the official driver defines it; the host stub does not */
 #define ADXL345_INT_DATA_READY_BIT 7
+#endif
 
 /* DSP parameters, sized for 1600 Hz */
 #define BLOCK_SIZE      16             /* 10 ms per block */
@@ -1185,9 +1187,36 @@ void myHandler()
      x*x <= 16.8e6 and rawMag2 <= 50.3e6. Inside uint32, no clamp
      needed -- the same argument rev H makes for mag2 <= 201e6.
 
-     Cost: 3 MUL, 2 ADD, one compare, a counter. ~60-80 cycles, ~5 us,
-     against the ~480 us of headroom rev H measured in reg 19. Confirm
-     on reg 19 after flashing -- static analysis is a hypothesis.   */
+     Cost: COMPUTED FROM A BUILD (avr-gcc 7.3.0 -Os, ATmega328P at
+     16 MHz), by disassembling myHandler() in the linked image and
+     counting cycles along each path:
+
+        201 cycles / 12.6 us   every supported sample (the sustained
+                               cost: this is what runs 1589 times a
+                               second)
+        205 cycles / 12.8 us   while the spike tolerance is leaking
+        300 cycles / 18.8 us   the sample that trips, worst case,
+                               including the millis() call
+
+     173 of the common-path cycles are the three squares alone. gcc
+     emits them as three calls to __mulhisi3 (41 cycles each with a
+     negative operand, 37 with a positive one) because the ATmega328P
+     has only an 8x8 multiplier. They cannot be shared with the three
+     squares rev H already computes: those square the DC-REMOVED ax,
+     ay, az, and this block must square the RAW x, y, z. Different
+     operands, so the duplication is real and unavoidable here.
+
+     This REPLACES an earlier estimate of ~60-80 cycles / ~5 us, which
+     was low by about 2.5x -- it costed the multiplies as instructions
+     rather than as libgcc calls.
+
+     Against the budget: rev H measured 153 us in reg 19 against a
+     629 us sample period, so this lands at ~166 us typical and ~172 us
+     worst case. Comfortably inside the 250 us target.
+
+     A cycle count is still not a measurement. It excludes interrupt
+     entry and exit and whatever the compiler did to the surrounding
+     code. CONFIRM ON REG 19 AFTER FLASHING (H-03).                */
   uint32_t rawMag2 = (uint32_t)((int32_t)x * x) +
                      (uint32_t)((int32_t)y * y) +
                      (uint32_t)((int32_t)z * z);

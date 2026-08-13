@@ -29,7 +29,7 @@
 #include "stubs/Arduino.h"
 #include "stubs/EEPROM.h"
 #include "stubs/SPI.h"
-#include "stubs/SparkFun_ADXL345-master/mFFT_SparkFun_ADXL345.cpp"
+#include "stubs/SparkFun_ADXL345-master/SparkFun_ADXL345.cpp"
 
 uint8_t  DDRC = 0, PORTC = 0, MCUSR = 0;
 uint16_t TCNT1 = 0, TCCR1A = 0, TCCR1B = 0, TIMSK1 = 0;

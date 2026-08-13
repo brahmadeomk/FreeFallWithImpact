@@ -21,8 +21,17 @@ test/run_tests.sh          builds and runs BOTH suites
 test/test_registers.cpp    CTX310, 79 checks
 test/test_ctx311.cpp       CTX311, 130 checks
 test/stubs/                host stand-ins for core, SPI, EEPROM, ADXL
-tools/ctx310_client.py     Modbus client
+tools/ctx310_client.py     Modbus client, map v8
+tools/ctx311_client.py     Modbus client, map v9
+tools/ctx311_capture.py    drop-rig CSV capture
+tools/build_avr.sh         real AVR build, flash/SRAM figures
+vendor/                    third-party code -- see vendor/PROVENANCE.md
 ```
+
+The ADXL345 driver lives at `vendor/SparkFun_ADXL345-master/`, NOT beside
+the sketches. Putting it beside a sketch shadows the host test stub and
+breaks `test/run_tests.sh` -- a quoted include resolves in the includer's
+directory first. `tools/build_avr.sh` copies it in for AVR builds.
 
 ## Build and test
 
@@ -103,5 +112,13 @@ confirms it. Static analysis of compiled output is not evidence.
 
 When writing a figure into a doc or comment, mark how it was obtained:
 measured on hardware, computed from a build, or estimated from source.
-The ISR cost figure in the CTX311 header is currently an **estimate** and
-is labelled as one. Do not quietly promote it.
+
+The ISR cost figure in the CTX311 header is now **computed from a build**
+(disassembly of `myHandler()`, cycles counted per path) and is labelled
+as such. It replaced an estimate that was low by ~2.5x. It is still not
+a measurement: it excludes interrupt entry/exit. **Do not promote it to
+"measured" until register 19 has been read off a flashed unit (H-03).**
+
+The flash and SRAM figures in `docs/RESOURCE_BUDGET.md` are likewise
+built, not measured. The stack high-water mark is neither and is still
+open.

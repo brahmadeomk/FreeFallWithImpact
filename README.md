@@ -193,8 +193,19 @@ the stock library instead. The patches are:
    effect, corrupting whatever follows the array when a noisy line fills
    the buffer.
 
-The ADXL345 driver (`SparkFun_ADXL345-master/`) is not vendored here and
-must be present alongside the sketch.
+The ADXL345 driver is now vendored at `vendor/SparkFun_ADXL345-master/`
+(official SparkFun library, unmodified — see `vendor/PROVENANCE.md`).
+For an Arduino IDE build, copy or symlink that directory next to the
+`.ino`, because the sketch includes it by a path relative to itself.
+
+It is not committed beside the sketch on purpose: a quoted include
+resolves in the sketch's own directory first, so a real driver sitting
+there would shadow the host test stub and break `test/run_tests.sh`.
+`tools/build_avr.sh` handles this for command-line builds:
+
+```
+tools/build_avr.sh CTX311_LossOfSupport_revA <core-dir> vendor/SparkFun_ADXL345-master
+```
 
 ## Tests
 

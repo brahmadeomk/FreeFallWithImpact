@@ -222,7 +222,7 @@
 #include <util/atomic.h>
 #include <avr/wdt.h>
 #include "SimpleModbusSlave.h"
-#include "SparkFun_ADXL345-master/mFFT_SparkFun_ADXL345.cpp"
+#include "SparkFun_ADXL345-master/SparkFun_ADXL345.cpp"
 
 /* ------------------------- configuration --------------------------- */
 #define OUTPUT_PORT_BIT   PC0
@@ -237,7 +237,9 @@
 #define THRESHOLD_MAX_MG     15000     /* +/-15 g datasheet figure */
 #define TRIP_HOLD_MS         3000UL
 
+#ifndef ADXL345_INT_DATA_READY_BIT   /* the official driver defines it; the host stub does not */
 #define ADXL345_INT_DATA_READY_BIT 7
+#endif
 
 /* DSP parameters, sized for 1600 Hz */
 #define BLOCK_SIZE      16             /* 10 ms per block */

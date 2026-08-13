@@ -1,14 +1,16 @@
 # Flash and SRAM budget — CTX310 rev H and CTX311 rev A
 
-**Status: PROVISIONAL. Built, not estimated — but not built against the
-product's own ADXL345 driver.** Read "The substitution" before quoting
-any number here. T-02's acceptance is *not* met by this document; the
-figures become final when the build is repeated with the real driver.
+**Built, not estimated.** Figures come from a real `avr-gcc` link for the
+ATmega328P against the ADXL345 driver now vendored in this repository at
+`vendor/SparkFun_ADXL345-master/`. Reproduce with `tools/build_avr.sh`.
+
+Still not a measurement of a running unit: nothing has been flashed. See
+"What free SRAM does and does not mean".
 
 ## Why this exists
 
 The architecture document (v0.2, §C7) carries a static SRAM figure of
-**~620 B**, arrived at by reading the source. That number has never been
+**~620 B**, arrived at by reading the source. That number had never been
 linked. Static SRAM is a bad thing to estimate by eye: `.bss` is
 dominated by what the libraries pull in — `HardwareSerial`'s two 64-byte
 ring buffers, the Modbus frame buffer, the register array — and not by
@@ -17,9 +19,6 @@ source.
 
 The estimate was low. Measured below: **1042 B for CTX311**, 68 % above
 the estimate.
-
-Figures below include the T-05 arming-window change (+50 B flash, no
-SRAM change).
 
 ## Figures
 
@@ -40,42 +39,18 @@ SRAM delta is mostly the raised `BUFFER_SIZE` (128 → 160, +32 B) plus the
 loss-of-support state and the extra registers.
 
 **Against the ≥ 15 % free-SRAM acceptance threshold: 49 % free, passes
-with a wide margin** — and see the caveat below, which says the real
-figure is very likely better still, not worse.
+with a wide margin.**
 
-## The substitution
+Figures include the T-05 arming-window change (+50 B flash, no SRAM
+change).
 
-Both sketches contain:
+### Where the ISR time goes
 
-```c
-#include "SparkFun_ADXL345-master/mFFT_SparkFun_ADXL345.cpp"
-```
-
-That file **is not in this repository** and never has been — the CTX310
-README says so outright: *"The ADXL345 driver
-(`SparkFun_ADXL345-master/`) is not vendored here and must be present
-alongside the sketch."* The only copy here is a 33-line host stub under
-`test/stubs/`, written for the tests, which is not the driver.
-
-So the build above substituted the **upstream** SparkFun library
-(`github.com/sparkfun/SparkFun_ADXL345_Arduino_Library`) for the
-product's `mFFT_`-prefixed variant. Every method and constant the
-sketches use is present upstream, so it links — but it is a different
-file, and two things say the product's copy is genuinely modified:
-
-- the `mFFT_` prefix itself;
-- the sketch has to `#define ADXL345_INT_DATA_READY_BIT` itself, and
-  doing so against the upstream header produces a *redefinition warning*
-  — meaning the product's driver evidently does **not** define it, and
-  upstream does.
-
-**Direction of the error.** The substitution is expected to *overstate*
-both figures. Upstream pulls in `Wire` (I²C) — a `TwoWire` instance with
-its own buffers — which this product cannot use: it runs the ADXL345 over
-**SPI**. A driver built for the SPI path alone should link smaller. So
-treat 1042 B as an upper bound on static SRAM and 49 % as a lower bound
-on free SRAM. The threshold conclusion holds either way; the exact
-numbers do not.
+`myHandler()` is 3380 B of that flash. Removing the loss-of-support
+block entirely takes it to 2848 B, so the block costs **532 B**, of
+which **402 B is the detection itself** and 130 B the stuck-data check.
+The cycle counts are in the sketch header and were computed the same
+way — see T-03.
 
 ## What "free SRAM" here does and does not mean
 
@@ -95,13 +70,14 @@ order of operations; it should go in alongside the soak run (H-05).
 ## Reproducing
 
 ```sh
-tools/build_avr.sh CTX311_LossOfSupport_revA <core-dir> <adxl-driver-dir>
+tools/build_avr.sh CTX311_LossOfSupport_revA <core-dir> vendor/SparkFun_ADXL345-master
 ```
 
 - toolchain: `avr-gcc (GCC) 7.3.0`, `GNU size (GNU Binutils) 2.26.20160125`
   (Ubuntu noble `gcc-avr` 1:7.3.0+Atmel3.7.0-1, `avr-libc`
   1:2.0.0+Atmel3.7.0-1)
 - core: `github.com/arduino/ArduinoCore-avr`, tag `1.8.6`
+- driver: `vendor/SparkFun_ADXL345-master/` — see `vendor/PROVENANCE.md`
 - flags: `-Os -ffunction-sections -fdata-sections -mmcu=atmega328p
   -DF_CPU=16000000L`, linked `-Wl,--gc-sections`
 
@@ -112,11 +88,22 @@ proxy, for both `package_index.tar.bz2` and `library_index.tar.bz2`.
 instead. Reporting the blocked domain rather than working around it, as
 the work package asks.
 
-## To finalise
+## A note on the driver and these numbers
 
-1. Drop the real `SparkFun_ADXL345-master/` beside each sketch.
-2. Re-run `tools/build_avr.sh` for both.
-3. Replace the table above and delete the PROVISIONAL banner.
+An earlier revision of this document was marked PROVISIONAL because the
+driver was not in the repository and the build had substituted the
+upstream SparkFun library. The driver has since been confirmed as the
+official SparkFun library and vendored, and **the figures did not move** —
+they were built against the same code all along. The PROVISIONAL banner
+and the substitution caveat are withdrawn.
 
-Until then the ~620 B figure in the architecture document should be read
-as **superseded and wrong**, and the numbers here as close but not final.
+That earlier revision also inferred, from a redefinition warning on
+`ADXL345_INT_DATA_READY_BIT`, that the product's driver must differ from
+upstream. **That inference was wrong.** Both define the same value (the
+sketch as `7`, the driver as `0x07`); the warning simply meant the two
+definitions collided. The sketch now guards its copy with `#ifndef`, so
+the warning is gone and the constant still resolves for the host stub
+build, where the driver is not present.
+
+The remaining figure that is genuinely still open is the stack
+high-water mark, above.
