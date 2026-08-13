@@ -77,6 +77,29 @@ tools/ctx311_client.py --port /dev/ttyUSB0 command clear-los
 If that is **refused**, the detection channel is still faulted. Fix the
 fault first — a refused re-arm is a correct refusal, not a tool problem.
 
+### If you get checksum errors
+
+A full sweep is 64 registers — a **133-byte** RTU frame, ~139 ms at
+9600 baud. One corrupted bit anywhere in it fails the CRC and the whole
+read is thrown away, so long frames are the first thing a marginal line
+breaks.
+
+A checksum error means the device **answered** and the reply was
+corrupted in transit. It is not a wrong address and not a dead device —
+those give you a timeout instead. Check, in this order:
+
+1. **Power.** A Raspberry Pi showing an undervoltage warning corrupts
+   serial traffic. Fix that before trusting any drop data taken on it.
+2. **RS-485 wiring** — A/B swapped, 120 Ω termination missing at either
+   end, or no bias resistors.
+3. **Frame length** — retry with `--chunk 16` to use short frames.
+4. **Ground** — RS-485 needs a common reference, not just A and B.
+
+`--chunk` is a fallback, not the default, and it costs something real:
+chunks are separate requests, so the register block can change between
+them and an event can straddle the split. Use the single read for drop
+captures if the line will carry it.
+
 ## Drop log
 
 One row per drop. `Result` is the tester's judgement, not the device's.

@@ -172,14 +172,88 @@ def connect(port, slave_id, baudrate=9600, timeout=1.0):
     return instrument
 
 
+# A full sweep is 64 registers = a 133-byte RTU frame. At 9600 baud that
+# is ~139 ms on the wire, and ONE corrupted bit anywhere in it fails the
+# CRC and throws the whole read away. On a noisy line, a long cable, or a
+# marginal RS-485 turnaround that happens often enough to matter.
+#
+# READ_CHUNK splits the sweep into smaller requests: 0 means one 64-register
+# read (the default, and the only atomic option), 32 means two reads, 16
+# means four. Shorter frames are far more likely to survive intact.
+#
+# The cost is atomicity, and it is a real cost for this device: chunks are
+# separate requests, so the register block can change between them and an
+# event can straddle the split. Prefer the single read; fall back to chunks
+# only when the line will not carry one.
+READ_CHUNK = 0
+READ_RETRIES = 3
+
+
 def read_all(instrument):
-    """Read the whole map in one request.
+    """Read the whole map, retrying on a corrupted frame.
 
     64 registers is a 133-byte response, which needs the CTX311 copy of
     SimpleModbusSlave with BUFFER_SIZE 160. Against the CTX310 copy (128)
     this request times out.
+
+    A checksum error is not a device fault -- it means the frame did not
+    survive the wire. Retrying is the right response; giving up on the
+    first one is not, which is what this used to do.
     """
-    return instrument.read_registers(0, REGISTER_COUNT, functioncode=3)
+    last = None
+    for attempt in range(READ_RETRIES):
+        try:
+            if READ_CHUNK:
+                regs = []
+                start = 0
+                while start < REGISTER_COUNT:
+                    n = min(READ_CHUNK, REGISTER_COUNT - start)
+                    regs.extend(
+                        instrument.read_registers(start, n, functioncode=3))
+                    start += n
+                return regs
+            return instrument.read_registers(0, REGISTER_COUNT,
+                                             functioncode=3)
+        except Exception as exc:            # minimalmodbus raises several
+            last = exc
+            time.sleep(0.05 * (attempt + 1))
+    raise last
+
+
+def describe_read_failure(exc):
+    """Turn a minimalmodbus failure into something actionable.
+
+    The raw traceback says "checksum error" and prints 133 bytes of hex,
+    which tells a tester nothing about what to do next.
+    """
+    text = str(exc)
+    lines = ["could not read the device: %s" % type(exc).__name__]
+
+    if "hecksum" in text or "CRC" in text:
+        lines += [
+            "",
+            "The device ANSWERED -- a checksum error means the reply arrived",
+            "and was corrupted on the way, not that the device is absent or",
+            "at the wrong address. Things that cause it, in the order worth",
+            "checking:",
+            "",
+            "  1. Power. A Raspberry Pi showing an undervoltage warning will",
+            "     corrupt serial traffic. Fix that first -- it invalidates",
+            "     every other measurement you take.",
+            "  2. RS-485 wiring: A/B swapped or marginal, missing 120 ohm",
+            "     termination at both ends, or no bias resistors.",
+            "  3. Frame length. A full sweep is 133 bytes; one bad bit loses",
+            "     all of it. Retry with --chunk 16 to use short frames.",
+            "  4. Ground. RS-485 needs a common reference, not just A and B.",
+        ]
+    elif "o response" in text or "imeout" in text:
+        lines += [
+            "",
+            "No reply at all. Check the slave id (--id, default 71), the",
+            "port (--port), the baud rate (--baud, default 9600), and that",
+            "the RS-485 transceiver is actually populated (H-02).",
+        ]
+    return "\n".join(lines)
 
 
 def as_signed(value):
@@ -358,8 +432,16 @@ def print_summary(regs):
     print("    and sits near 0 at rest. Do not trend them on one axis.")
 
 
+def read_all_or_exit(instrument):
+    """Read the map, or exit with advice instead of a traceback."""
+    try:
+        return read_all(instrument)
+    except Exception as exc:
+        raise SystemExit(describe_read_failure(exc))
+
+
 def cmd_dump(instrument, args):
-    regs = read_all(instrument)
+    regs = read_all_or_exit(instrument)
     check_map_version(regs)
     print_summary(regs)
     print()
@@ -372,7 +454,7 @@ def cmd_dump(instrument, args):
 
 
 def cmd_status(instrument, args):
-    regs = read_all(instrument)
+    regs = read_all_or_exit(instrument)
     check_map_version(regs)
     print_summary(regs)
 
@@ -381,7 +463,7 @@ def cmd_command(instrument, args):
     # Guard the map version before writing anything at all: sending
     # CLEAR_LOS (0x0004) to a CTX310 would land on a code it does not
     # know, which is harmless, but the next command in the list is not.
-    check_map_version(read_all(instrument))
+    check_map_version(read_all_or_exit(instrument))
     count = send_command(instrument, args.name)
     print("%s accepted (command count now %d)" % (args.name, count))
     if args.name == "factory-reset":
@@ -389,14 +471,14 @@ def cmd_command(instrument, args):
 
 
 def cmd_los_threshold(instrument, args):
-    check_map_version(read_all(instrument))
+    check_map_version(read_all_or_exit(instrument))
     value = set_register(instrument, LOS_THRESHOLD, LOS_THRESHOLD_EFF,
                          args.milli_g, "mg")
     print("LOS threshold now %d mg" % value)
 
 
 def cmd_los_time(instrument, args):
-    check_map_version(read_all(instrument))
+    check_map_version(read_all_or_exit(instrument))
     value = set_register(instrument, LOS_TIME_MS, LOS_TIME_MS_EFF,
                          args.milliseconds, "ms")
     print("LOS confirm time now %d ms" % value)
@@ -409,6 +491,14 @@ def main(argv=None):
     parser.add_argument("--port", default="/dev/ttyUSB0")
     parser.add_argument("--id", type=int, default=71, dest="slave_id")
     parser.add_argument("--baud", type=int, default=9600)
+    parser.add_argument("--chunk", type=int, default=0, metavar="N",
+                        help="read the map in N-register chunks instead of "
+                             "one 64-register request. Shorter frames "
+                             "survive a noisy line better, but chunks are "
+                             "NOT atomic -- the block can change between "
+                             "them. Try 16 if you get checksum errors.")
+    parser.add_argument("--retries", type=int, default=3,
+                        help="attempts per read before giving up (default 3)")
 
     sub = parser.add_subparsers(dest="action", required=True)
 
@@ -425,6 +515,10 @@ def main(argv=None):
     p.add_argument("milliseconds", type=int)
 
     args = parser.parse_args(argv)
+
+    global READ_CHUNK, READ_RETRIES
+    READ_CHUNK = max(0, args.chunk)
+    READ_RETRIES = max(1, args.retries)
 
     handlers = {
         "dump": cmd_dump,

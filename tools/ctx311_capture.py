@@ -225,6 +225,15 @@ def main(argv=None):
                         help="seconds to capture (default: until Ctrl-C)")
     parser.add_argument("--quiet", action="store_true",
                         help="suppress per-transition lines")
+    parser.add_argument("--chunk", type=int, default=0, metavar="N",
+                        help="read the map in N-register chunks instead of "
+                             "one 64-register request. Shorter frames "
+                             "survive a noisy line better. NOT atomic -- an "
+                             "event can straddle the split, so prefer the "
+                             "single read for drop captures. Try 16 if you "
+                             "get checksum errors.")
+    parser.add_argument("--retries", type=int, default=3,
+                        help="attempts per read before giving up (default 3)")
     args = parser.parse_args(argv)
 
     try:
@@ -233,9 +242,22 @@ def main(argv=None):
         raise SystemExit("minimalmodbus is not installed "
                          "(pip install minimalmodbus)")
 
+    ctx.READ_CHUNK = max(0, args.chunk)
+    ctx.READ_RETRIES = max(1, args.retries)
+
     # Same refusal as the client. Capturing a map-8 device would produce
     # a CSV that looks valid and is not.
-    ctx.check_map_version(ctx.read_all(instrument))
+    #
+    # This read used to be unprotected, so one corrupted frame on connect
+    # ended the run with a raw minimalmodbus traceback and 133 bytes of
+    # hex -- at a drop rig, with the unit already rigged. It now retries
+    # and, failing that, says what to check.
+    try:
+        ctx.check_map_version(ctx.read_all(instrument))
+    except SystemExit:
+        raise                                   # version refusal: already clear
+    except Exception as exc:
+        raise SystemExit(ctx.describe_read_failure(exc))
 
     with open(args.out, "w", newline="") as handle:
         writer = csv.writer(handle)
