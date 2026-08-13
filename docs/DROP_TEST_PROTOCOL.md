@@ -130,11 +130,19 @@ comparable to the idle soak in `HARDWARE_VALIDATION.md`.
 | **Spurious trips** | |
 | Register 61 — faults raised | |
 | Register 19 — max ISR time (µs) | |
+| Register 48 — min free SRAM (debug image only) | |
 
 Register 19 is the check that the loss-of-support block did not push the
 ISR past its budget (H-03, target ≤ 250 µs). The figure in the sketch
 header is computed from a build, not measured; this is where it becomes
 a measurement.
+
+Register 48 only carries a number if the unit is running an image built
+with `-DCTX311_STACK_DEBUG` (see `docs/RESOURCE_BUDGET.md`). It reports
+minimum free SRAM in bytes — the one figure the static budget cannot
+give. Run the soak on that image if you want it, then **reflash a
+release image before the unit goes into service**: a release build reads
+0 there, and a field device reading non-zero is running a debug build.
 
 ## Conclusions
 

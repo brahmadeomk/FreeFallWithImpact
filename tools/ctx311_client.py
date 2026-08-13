@@ -70,6 +70,13 @@ HEIGHT_INVALID = 0xFFFF
 SIGNED_REGISTERS = (32, 33, 34)
 RESERVED_REGISTERS = (35, 48)
 
+# Register 48 reads 0 in a release build. A firmware built with
+# -DCTX311_STACK_DEBUG reports minimum free SRAM there instead, for the
+# soak run. Seeing it non-zero in the field means a debug image is
+# installed, which is worth saying out loud rather than printing as a
+# puzzling "reserved" value.
+STACK_DEBUG_REG = 48
+
 COMMANDS = {
     "clear-peakhold": 0x0001,
     "clear-tripcount": 0x0002,
@@ -135,7 +142,7 @@ NAMES = {
     41: "1s vector RMS (mg)",
     42: "firmware version", 43: "map version", 44: "build date",
     45: "last command", 46: "command status", 47: "command count",
-    48: "reserved (always 0)",
+    48: "reserved (0), or min free SRAM in a debug build",
     49: "LOS status bits",
     50: "LOS threshold (mg) [R/W]", 51: "LOS threshold effective (mg)",
     52: "LOS confirm time (ms) [R/W]", 53: "LOS confirm time eff (ms)",
@@ -333,6 +340,16 @@ def print_summary(regs):
     print("last event:      duration %d ms, minimum %d mg, impact peak %d mg"
           % (regs[LAST_DURATION], regs[LAST_MIN_MAG], regs[LAST_IMPACT]))
     print("                 height %s" % format_height(regs[LAST_HEIGHT]))
+    print()
+    if regs[STACK_DEBUG_REG]:
+        print()
+        print("!! register 48 reads %d, not 0."
+              % regs[STACK_DEBUG_REG])
+        print("   This device is running a -DCTX311_STACK_DEBUG image and")
+        print("   is reporting minimum free SRAM there. That build is for")
+        print("   the soak run only -- reflash with a release image before")
+        print("   the device goes back into service.")
+
     print()
     print("live raw magnitude (reg 60): %d mg" % regs[RAW_MAG])
     print("    Includes gravity -- ~1000 mg at rest is CORRECT, not a fault.")

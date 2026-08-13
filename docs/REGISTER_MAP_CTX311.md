@@ -107,6 +107,19 @@ Arrest energy goes with the **square** of velocity. Doubling the
 confirm time quadruples what the arrestor absorbs. Add the arrest
 device's own engagement time to every figure.
 
+## Registers 35 and 48 are reserved holes
+
+Both read **0** and are pinned to 0 on every read, so a stray write from
+an older master cannot stick. They are not reused, so the rest of the map
+does not renumber.
+
+**One exception, and it never ships.** A firmware built with
+`-DCTX311_STACK_DEBUG` reports minimum free SRAM in bytes through
+**register 48** instead of 0. That image exists for the H-05 soak run
+only — see `docs/RESOURCE_BUDGET.md`. If a device in the field reads
+non-zero at register 48, it is running a debug build and should be
+reflashed with a release image.
+
 ## New registers (49–63)
 
 | Reg | Name | Access | Units / notes |

@@ -24,6 +24,14 @@
 # build against a *substitute* driver does not give you the product's
 # numbers. Point it at the real one before quoting any figure as final.
 #
+# Extra compiler flags come from $EXTRA. The one that matters:
+#
+#   EXTRA=-DCTX311_STACK_DEBUG tools/build_avr.sh CTX311_LossOfSupport_revA ...
+#
+# builds the stack high-water image for a soak run. That image reports
+# minimum free SRAM in register 48 (a reserved hole in a release build)
+# and MUST NOT be shipped. See docs/RESOURCE_BUDGET.md.
+#
 # Requires: gcc-avr, avr-libc, binutils-avr.
 set -e
 
@@ -41,7 +49,7 @@ cp "$ADXL"/* "$OUT/SparkFun_ADXL345-master/"
 
 cd "$OUT"
 
-MCU="-mmcu=atmega328p -DF_CPU=16000000L -DARDUINO=10819 -DARDUINO_AVR_NANO -DARDUINO_ARCH_AVR"
+MCU="-mmcu=atmega328p -DF_CPU=16000000L -DARDUINO=10819 -DARDUINO_AVR_NANO -DARDUINO_ARCH_AVR $EXTRA"
 OPT="-Os -ffunction-sections -fdata-sections"
 INC="-I$CORE/cores/arduino -I$CORE/variants/eightanaloginputs \
      -I$CORE/libraries/SPI/src -I$CORE/libraries/EEPROM/src \

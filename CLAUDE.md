@@ -120,5 +120,10 @@ a measurement: it excludes interrupt entry/exit. **Do not promote it to
 "measured" until register 19 has been read off a flashed unit (H-03).**
 
 The flash and SRAM figures in `docs/RESOURCE_BUDGET.md` are likewise
-built, not measured. The stack high-water mark is neither and is still
-open.
+built, not measured.
+
+The stack high-water mark is **instrumented but unmeasured**. The code
+exists behind `-DCTX311_STACK_DEBUG` and reports through reserved
+register 48; nothing has been flashed, so there is still no number.
+A release build must read 0 at register 48 — if you ever change that,
+you have shipped a debug image.

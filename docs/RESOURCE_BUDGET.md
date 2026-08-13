@@ -55,17 +55,60 @@ way — see T-03.
 ## What "free SRAM" here does and does not mean
 
 The 1006 B above is **static** free SRAM. It is the space the stack has
-to live in, not headroom known to be spare. Nothing here measures how
-much of it the stack actually consumes — the deepest path is an ISR
-firing on top of `loop()` inside a Modbus response, and that has not been
-instrumented.
+to live in, not headroom known to be spare. It does not say how much of
+that the stack actually consumes — the deepest path is an ISR firing on
+top of `loop()` inside a Modbus response. The instrumentation below
+answers that, but only once it has been flashed.
 
-**The stack high-water instrumentation asked for in T-02 has not been
-written.** Painting free SRAM at boot and reading back the high-water
-mark only produces a number once it has been flashed and soaked on a
-unit, and nothing has been flashed. Adding untested code to an
-arrest-path sketch to produce a figure nobody can read yet is the wrong
-order of operations; it should go in alongside the soak run (H-05).
+### The stack high-water instrumentation
+
+It is written, and it is **off by default**. Build it with:
+
+```sh
+EXTRA=-DCTX311_STACK_DEBUG tools/build_avr.sh \
+    CTX311_LossOfSupport_revA <core-dir> vendor/SparkFun_ADXL345-master
+```
+
+**How it works.** A naked routine in `.init1` — before `.bss` is
+cleared, before `main()`, before anything has touched the stack — paints
+the whole free region with `0xC5`. It is written in assembler because a C
+body would put its own locals on the very stack it is painting.
+`stackUnusedBytes()` then counts canaries still standing from `_end`
+upward, stopping at the first byte the stack has reached. That count is
+**minimum free SRAM since reset** — the high-water mark. Small is bad.
+
+**Where it reports, and why that is not a new register.** T-02 forbids
+adding one, so it borrows **register 48**, a reserved hole that reads 0
+in a release build. Register 48 rather than 35 on purpose: in map 8
+register 35 was *writable*, so a legacy master could still write it and
+fight the debug value on the wire, while 48 was only ever 35's read-only
+echo. Borrowing a hole also costs no diagnostic — the soak needs
+registers 19, 26, 27, 31 and 54 intact, and overloading any of those
+would spoil the run this exists to serve.
+
+**This image must not ship.** A release build publishes 0 in register
+48; the debug build does not. That is the whole reason it is behind a
+flag.
+
+| Build | Flash | Static SRAM | `stackPaint` in image |
+|---|---:|---:|---|
+| release | 17630 B | 1042 B | absent |
+| `-DCTX311_STACK_DEBUG` | 17676 B (+46 B) | 1042 B (no change) | present |
+
+Verified in the linked image rather than assumed: the painter survives
+`--gc-sections`, loads `Z = _end` (0x0512), the canary `0xC5`, and loops
+to `__stack` (0x08FF) — 1005 bytes painted — and the counter's result is
+stored to `holdingRegs+0x60`, which is register 48.
+
+`test/run_tests.sh` builds and runs the CTX311 suite a third time with
+the flag on. The guarded code is invisible to a normal build, so that
+pass is what stops it rotting; and because the host stub returns 0, all
+143 assertions must still hold — if that pass ever diverges, the debug
+build has started changing behaviour it should not.
+
+**The number itself still needs hardware.** Nothing here has been
+flashed. Read register 48 at the end of the H-05 soak, then put a
+release build back on.
 
 ## Reproducing
 

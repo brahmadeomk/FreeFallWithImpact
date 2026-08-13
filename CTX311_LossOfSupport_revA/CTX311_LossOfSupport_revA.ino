@@ -1594,6 +1594,91 @@ static void updateOutput()
 }
 
 /* ==================================================================== */
+/*  stack high-water instrumentation  --  DEBUG BUILDS ONLY             */
+/* ==================================================================== */
+/* Build with -DCTX311_STACK_DEBUG. It is OUT of a release build and
+   must stay out: it reports through a RESERVED register, which a
+   release image must never do.
+
+   Why it exists. docs/RESOURCE_BUDGET.md can say how much SRAM is
+   statically free (1006 B) but not how much of that the stack actually
+   eats. The deepest path is this ISR firing on top of loop() inside a
+   Modbus response, and no amount of reading the source settles it --
+   the answer is a number a running unit has to give you.
+
+   Method: paint the whole free region with a known byte before main(),
+   then count how many bytes are still wearing that byte. The lowest
+   count ever observed is the high-water mark. Flash this for the H-05
+   soak and read it at the end; a release build goes back on afterwards.
+
+   The reported figure is BYTES STILL UNTOUCHED -- minimum free SRAM.
+   Small is bad. If it approaches zero the stack has reached .bss and
+   the numbers in RESOURCE_BUDGET.md stop meaning anything.
+
+   WHERE IT REPORTS, and why that is not a new register. T-02 says not
+   to add one, because the map is a contract. So this borrows register
+   48, a reserved hole that always reads 0 in a release build. Reg 48
+   rather than reg 35 deliberately: in map 8 reg 35 was WRITABLE (the
+   old sustained-RMS threshold) and a legacy master could still write
+   it, which would fight the debug value on the wire. Reg 48 was only
+   ever the read-only echo of 35, so nothing out there writes it.
+
+   Borrowing a hole also costs no diagnostic. The soak needs registers
+   19, 26, 27, 31 and 54 to stay meaningful, and overloading any of
+   those to carry this number would spoil the run it exists to serve. */
+#ifdef CTX311_STACK_DEBUG
+
+#define STACK_CANARY 0xC5
+
+#ifdef __AVR__
+
+extern uint8_t _end;        /* end of .bss -- linker-provided */
+extern uint8_t __stack;     /* top of RAM   -- linker-provided */
+
+/* Runs from .init1: before .bss is cleared, before main(), and before
+   anything has used the stack. naked, and written in assembler,
+   because a C body would place its own locals on the very stack it is
+   painting and then paint over them.
+
+   Paints [_end, __stack) -- the top byte is left alone so nothing that
+   the startup code may already have placed at the stack pointer is
+   disturbed. */
+void stackPaint(void) __attribute__((naked, used, section(".init1")));
+void stackPaint(void)
+{
+  __asm volatile (
+    "    ldi r30, lo8(_end)"    "\n"
+    "    ldi r31, hi8(_end)"    "\n"
+    "    ldi r24, %[canary]"    "\n"
+    "    ldi r25, hi8(__stack)" "\n"
+    "    rjmp 2f"               "\n"
+    "1:  st   Z+, r24"          "\n"
+    "2:  cpi  r30, lo8(__stack)""\n"
+    "    cpc  r31, r25"         "\n"
+    "    brlo 1b"               "\n"
+    :: [canary] "M" (STACK_CANARY)
+  );
+}
+
+/* Counts canary bytes still standing, from _end upward. Stops at the
+   first byte the stack has touched, so this is the minimum free SRAM
+   ever seen since reset, not the free SRAM right now. */
+static uint16_t stackUnusedBytes(void)
+{
+  const uint8_t *p = &_end;
+  uint16_t       n = 0;
+
+  while (p < &__stack && *p == STACK_CANARY) { p++; n++; }
+  return n;
+}
+
+#else   /* host test build: there is no AVR stack to paint */
+static uint16_t stackUnusedBytes(void) { return 0; }
+#endif  /* __AVR__ */
+
+#endif  /* CTX311_STACK_DEBUG */
+
+/* ==================================================================== */
 /*  register publication                                                */
 /* ==================================================================== */
 /* Runs from sensorData(), i.e. inside the function-3 handler, so this
@@ -1680,7 +1765,14 @@ static void publishBlock()
   /* reserved holes: pinned to 0 on every read so a stray write from a
      map-7 master cannot stick and look like an armed trip */
   holdingRegs[Rsvd35Reg]          = 0;
+#ifdef CTX311_STACK_DEBUG
+  /* DEBUG BUILD ONLY -- reg 48 carries minimum free SRAM in bytes
+     instead of 0. See the stack instrumentation block above. A release
+     image must publish 0 here. */
+  holdingRegs[Rsvd48Reg]          = stackUnusedBytes();
+#else
   holdingRegs[Rsvd48Reg]          = 0;
+#endif
   holdingRegs[PeakSumHoldReg]     = countsToMg(ph);
   holdingRegs[TripCountReg]       = tc;
   holdingRegs[BlockMissedReg]     = bm;
