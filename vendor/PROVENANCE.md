@@ -16,13 +16,33 @@ once.
 | Files taken | `src/SparkFun_ADXL345.cpp`, `src/SparkFun_ADXL345.h`, `library.properties` |
 | Modifications | **none** — byte-for-byte upstream |
 
-**Licence:** upstream's README points at a `LICENSE.md` that is not
-present in the repository at this commit, so no licence text could be
-vendored with the code. The file headers credit E. Robert at SparkFun
-Electronics and note the source as a modified Bildr ADXL345 driver.
-SparkFun's libraries are normally released under permissive terms, but
-**that has not been confirmed from a licence file** and should be before
-the product ships.
+**Licence: open source**, per upstream's own README, which states it
+directly:
+
+> ## License Information
+>
+> This product is _**open source**_!
+>
+> Please review the LICENSE.md file for license information.
+>
+> If you have any questions or concerns on licensing, please contact
+> techsupport@sparkfun.com.
+>
+> Distributed as-is; no warranty is given.
+
+The `LICENSE.md` it refers to is **not present in the repository at this
+commit**, so no licence text could be vendored alongside the code and the
+specific identifier (MIT, CC-BY-SA, beerware — SparkFun have used all
+three across their projects) is not pinned here. The statement above is
+the licence evidence this repository carries.
+
+If a specific SPDX identifier is ever needed — for an SBOM, a customer
+licence schedule, or an attribution notice — take it from a later
+upstream release or from techsupport@sparkfun.com, and record it here.
+Nothing about the vendoring or the build depends on that.
+
+The file headers credit E. Robert at SparkFun Electronics and note the
+source as a modified Bildr ADXL345 driver.
 
 ### Why it is here and not beside the sketches
 
