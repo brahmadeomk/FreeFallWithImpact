@@ -9,6 +9,78 @@ This mirrors `HARDWARE_VALIDATION.md`: measurements taken from a real
 unit over Modbus, one row per drop. A claim is a hypothesis until a unit
 confirms it.
 
+## Quick bench check — is detection working at all?
+
+Five minutes, no rig. This proves the detector fires and reports; it
+tunes nothing and proves nothing about the arrest device. The full
+protocol below is what tuning needs.
+
+**You do not need a real fall.** The default threshold (register 50) is
+850 mg held for 25 ms (register 52) — that is "lost about 15 % of
+support for 40 samples", not free fall. Accelerating the sensor downward
+by hand, or dropping it 20–30 cm onto a cushion, is enough.
+
+**Safety:** do this with nothing connected to PC1, or with a bench lamp
+or meter on it. Not a real arrest device — that needs H-01 closed first.
+
+### The loop
+
+1. **Check it is armed.** Register 49 **bit 6 must be clear** and
+   register 61 must be **0**. For the first ~2 s after power-up bit 6 is
+   set, detection is suppressed, and a drop in that window proves
+   nothing. Register 60 should read ~1000 mg at rest — that is gravity,
+   and it is the quickest proof the sensor is alive.
+
+2. **Note register 54** (LOS trip count) before you start.
+
+3. **Drop it**, or accelerate it downward by hand.
+
+4. **Read back:**
+
+   | Register | Expect | Meaning |
+   |---|---|---|
+   | 54 | incremented | it fired |
+   | 49 bit 0 | 1 | output latched |
+   | 49 bit 5 | **0** | a real event, not a fault trip |
+   | 61 | 0 | no fault |
+   | 56 | well below 850 | how far the magnitude fell — the real evidence |
+   | 55 | ≥ 25 | how long it stayed down, ms |
+
+5. **Re-arm** before the next one — the output latches by default:
+
+   ```sh
+   tools/ctx311_client.py --port /dev/ttyUSB0 command clear-los
+   ```
+
+Or watch it live, which prints a summary per event automatically:
+
+```sh
+tools/ctx311_capture.py --port /dev/ttyUSB0 --out bench.csv
+```
+
+### Reading the result honestly
+
+**Register 56 is the one to trust.** It is the lowest magnitude reached.
+A real drop approaches 0 mg; a hand movement that just clipped the
+threshold sits in the 700s. Both increment register 54, and only
+register 56 tells them apart.
+
+**Register 57 will usually say "not valid", and that is correct.** Height
+is only reported when the assembly actually reached free-fall depth
+(register 49 bit 3, minimum below 300 mg). A short bench drop rarely
+does. It is withholding a number it cannot justify, not failing.
+
+**If register 49 bit 5 is set, the trip was a FAULT, not a fall.** The
+device tripped because it lost its detection channel. Check register 61
+and fix that first — the drop told you nothing.
+
+**If nothing trips:** confirm bit 6 is clear (armed), confirm register 60
+moves when you move the sensor, and check that the drop actually lasted
+25 ms — at 1 g that is only ~3 cm of travel, but a hand movement that
+decelerates early may never hold below threshold for long enough.
+
+---
+
 ## Before the first drop — H-01 must be closed
 
 **Do not connect a real arrest device until H-01 is confirmed.** On loss
