@@ -79,6 +79,112 @@ moves when you move the sensor, and check that the drop actually lasted
 25 ms — at 1 g that is only ~3 cm of travel, but a hand movement that
 decelerates early may never hold below threshold for long enough.
 
+## Register codes — what a raw value means
+
+Every register that carries **bits** or **coded values** rather than a
+plain number. Bitfields add up: a register showing 11 has bits 0, 1 and 3
+set. Anything not listed here is a plain integer in the units the map
+gives.
+
+### Register 49 — LOS status (bitfield, read-only)
+
+| Bit | Hex | Dec | Meaning |
+|---|---|---:|---|
+| 0 | `0x01` | 1 | **Latched** — the arrest output is open and stays open until cleared |
+| 1 | `0x02` | 2 | **Active now** — magnitude is below threshold at this instant |
+| 2 | `0x04` | 4 | Impact followed — the impact detector also fired during the event |
+| 3 | `0x08` | 8 | **Reached free-fall depth** — minimum went below 300 mg. Register 57 is only valid when this is set |
+| 4 | `0x10` | 16 | Impact clipped — the peak hit the ±16 g ceiling, true peak is higher |
+| 5 | `0x20` | 32 | **Tripped by FAULT, not by an event** — see register 61. Exclude from tuning |
+| 6 | `0x40` | 64 | **Still arming** — detection suppressed, health open. Not a fault |
+
+**Values you will actually see:**
+
+| Value | Hex | Means |
+|---:|---|---|
+| 0 | `0x00` | Armed, healthy, nothing happening — the normal resting state |
+| 64 | `0x40` | Still arming (first ~2 s after reset). Wait for it to clear |
+| 3 | `0x03` | Event in progress — latched and still below threshold |
+| 1 | `0x01` | Event over, still latched. Needs `clear-los` |
+| 11 | `0x0B` | Latched + active + reached free-fall depth — a genuine drop |
+| 33 | `0x21` | Latched **by a fault**. Not a fall. Check register 61 |
+
+### Register 61 — Fault flags (bitfield, read-only)
+
+**Detection lost** means the protective function is gone, and the arrest
+engages if register 63 is 1. **Advisory** opens health only.
+
+| Bit | Hex | Dec | Name | Class | Meaning |
+|---|---|---:|---|---|---|
+| 0 | `0x01` | 1 | RATE | **detection lost** | Sample rate outside 1200–2000 Hz — dead part, dead SPI, detached INT1 |
+| 1 | `0x02` | 2 | STUCK | **detection lost** | Bit-identical samples ~1 s. A real ADXL345 always dithers |
+| 2 | `0x04` | 4 | IMPLAUSIBLE | **detection lost** | Magnitude away from 1 g at rest >2 s. Suspended during a real event |
+| 3 | `0x08` | 8 | CONFIG | advisory | EEPROM was defaulted. Check registers 22, 50, 52 |
+| 4 | `0x10` | 16 | BOOTCHECK | **detection lost** | Boot plausibility check failed |
+| 5 | `0x20` | 32 | WDT_RESET | advisory | Watchdog fired at some point. Sticky until cleared |
+
+Detection-lost mask = `0x17` (bits 0, 1, 2, 4). If `reg61 & 0x17` is
+non-zero, `CLEAR_LOS` will be **refused** until the fault clears.
+
+### Register 25 — Impact status (bitfield, read-only)
+
+| Bit | Hex | Dec | Meaning |
+|---|---|---:|---|
+| 0 | `0x01` | 1 | Impact output tripped right now |
+| 1 | `0x02` | 2 | Impact latched (snapshot held) |
+| 2 | `0x04` | 4 | **Always 0** — removed in map 9. Register 26 is the blocks-missed counter |
+| 3 | `0x08` | 8 | Config was defaulted at boot |
+
+### Register 29 — Reset cause (raw MCUSR, read-only)
+
+More than one can be set.
+
+| Bit | Hex | Dec | Meaning |
+|---|---|---:|---|
+| 0 | `0x01` | 1 | PORF — power-on reset. Normal for a cold start |
+| 1 | `0x02` | 2 | EXTRF — external reset pin |
+| 2 | `0x04` | 4 | BORF — **brown-out**. Investigate the supply |
+| 3 | `0x08` | 8 | WDRF — **watchdog fired**. Sets `FAULT_WDT_RESET` in register 61 |
+
+### Enumerated registers (a single code, not bits)
+
+| Reg | Code | Meaning |
+|---|---:|---|
+| 46 command status | 0 | Idle — no command since boot |
+| | 1 | Accepted and executed |
+| | 2 | **Not accepted** — unknown code, *or* a known command refused (e.g. `CLEAR_LOS` while faulted) |
+| 62 boot check | 0 | Pending — not finished yet |
+| | 1 | Pass |
+| | 2 | **FAIL** — sets `FAULT_BOOTCHECK` |
+| 63 fault action | 0 | A detection-lost fault opens health only |
+| | 1 | A detection-lost fault **also engages the arrest** (default) |
+| 3 output state | 0 | Impact output tripped |
+| | 1 | Impact output closed (safe) |
+
+### Register 28 — Command codes (write only, self-clearing)
+
+Always reads back 0. Confirm through registers 45–47, never by reading 28.
+
+| Code | Name | Effect |
+|---|---|---|
+| `0x0001` | CLEAR_PEAKHOLD | Zeroes peak holds (registers 30, 36) |
+| `0x0002` | CLEAR_TRIPCOUNT | Zeroes impact trip count (register 31) |
+| `0x0003` | CLEAR_DIAG | Zeroes diagnostics (registers 20, 26) |
+| `0x0004` | **CLEAR_LOS** | Clears the arrest latch and re-arms. **Refused while a detection-lost fault stands** |
+| `0x0005` | CLEAR_LOSCOUNT | Zeroes LOS trip count (register 54) only |
+| `0x0006` | CLEAR_FAULTS | Clears latched fault bits. A condition still present is re-raised within ~1 s |
+| `0x5A5A` | FACTORY_RESET | All settings to defaults, **slave ID returns to 71** |
+
+### Sentinel values
+
+| Reg | Value | Meaning |
+|---|---|---|
+| 57 height | `0xFFFF` (65535) | **Not valid** — never reached free-fall depth. Not a 655 m fall |
+| 59 output hold | `0` | Latch until commanded (the default) — not "no hold" |
+| 48 reserved | non-zero | You are running a `-DCTX311_STACK_DEBUG` image. Reflash a release build |
+
+---
+
 ---
 
 ## Before the first drop — H-01 must be closed

@@ -606,7 +606,8 @@ enum
   SumReg,              /* 23 TRIAXIAL VECTOR RMS, mg, 10 ms window */
   ThresholdEffReg,     /* 24 peak threshold in force, mg (echo of 22) */
   StatusReg,           /* 25 bit0 tripped, bit1 latched,
-                              bit2 block missed, bit3 cfg defaulted */
+                              bit2 REMOVED in map 9 (always 0 -- reg 26
+                              is the counter), bit3 cfg defaulted    */
   BlockMissedReg,      /* 26 blocks loop() failed to collect */
   SampleRateReg,       /* 27 measured samples/s (expect ~1600) */
   CommandReg,          /* 28 W TRIGGER: CMD_* codes. SELF-CLEARING --
