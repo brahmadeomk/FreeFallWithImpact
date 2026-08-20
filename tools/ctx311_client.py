@@ -32,6 +32,7 @@ See docs/REGISTER_MAP_CTX311.md for the full map. Requires minimalmodbus
 """
 
 import argparse
+import math
 import sys
 import time
 
@@ -66,6 +67,10 @@ BOOT_CHECK = 62
 FAULT_ACTION = 63
 
 HEIGHT_INVALID = 0xFFFF
+
+DC_X = 32               # gravity vector, SIGNED mg -- see the tilt command
+DC_Y = 33
+DC_Z = 34
 
 SIGNED_REGISTERS = (32, 33, 34)
 RESERVED_REGISTERS = (35, 48)
@@ -442,6 +447,96 @@ def print_summary(regs):
     print("    and sits near 0 at rest. Do not trend them on one axis.")
 
 
+def tilt_report(regs, ref=None):
+    """Derive tilt from the gravity vector in registers 32-34.
+
+    The firmware already tracks gravity: it has to, because the impact
+    path is AC-coupled and needs the DC component removed. Registers
+    32-34 are that vector, and a gravity vector IS a tilt measurement --
+    nothing new has to be computed on the device.
+
+    All the trigonometry lives here on the master. The firmware does no
+    floating point and no trig by design, and none of this belongs in an
+    ISR anyway.
+
+    WHAT THIS CANNOT DO, and none of it is fixable in software:
+
+      * It is only valid AT REST. An accelerometer cannot tell tilt from
+        linear acceleration -- they are the same measurement. While the
+        assembly is being jacked, is falling, or is vibrating, the
+        "tilt" reported here is meaningless. Register 23 is used below
+        as a stillness check for exactly this reason.
+      * It LAGS. The DC tracker runs a 0.124 Hz corner (tau 1.28 s), so
+        a step change in tilt takes roughly 4-5 s to settle. Fine for
+        structural tilt, useless for anything fast.
+      * There is NO YAW. Rotation about the gravity vector does not
+        change the gravity vector, so it is invisible. Two axes of
+        freedom, never three.
+      * It is NOT a protective function. Nothing here operates an
+        output. Trend it, alarm on it in the PLC if you like, but the
+        arrest path is registers 49-63 and this is not part of it.
+    """
+    x = as_signed(regs[DC_X])
+    y = as_signed(regs[DC_Y])
+    z = as_signed(regs[DC_Z])
+    mag = math.sqrt(x * x + y * y + z * z)
+
+    lines = []
+    lines.append("gravity vector:  x %+5d  y %+5d  z %+5d  mg" % (x, y, z))
+    lines.append("magnitude:       %.0f mg" % mag)
+
+    if mag < 700 or mag > 1400:
+        lines.append("")
+        lines.append("!! magnitude is not ~1 g. Either the device is moving, or the")
+        lines.append("   sensor is faulty. Tilt from this vector is meaningless.")
+        return "\n".join(lines)
+
+    # Stillness check. Register 23 is AC-coupled and sits near 0 at rest,
+    # so it is the honest test of whether a tilt reading means anything.
+    moving = regs[VECTOR_RMS]
+    lines.append("motion (reg 23): %d mg %s"
+                 % (moving,
+                    "-- at rest, tilt is valid" if moving < 30
+                    else "-- MOVING. Tilt below is NOT trustworthy"))
+    lines.append("")
+
+    # Angle of the gravity vector from each axis. Which one matters
+    # depends on how the unit is mounted, which this tool cannot know.
+    for name, comp in (("X", x), ("Y", y), ("Z", z)):
+        ang = math.degrees(math.acos(max(-1.0, min(1.0, comp / mag))))
+        lines.append("  angle from %s axis: %6.2f deg" % (name, ang))
+
+    if ref is not None:
+        rx, ry, rz = ref
+        rmag = math.sqrt(rx * rx + ry * ry + rz * rz)
+        if rmag == 0:
+            lines.append("")
+            lines.append("reference vector is zero -- ignoring it")
+        else:
+            dot = (x * rx + y * ry + z * rz) / (mag * rmag)
+            change = math.degrees(math.acos(max(-1.0, min(1.0, dot))))
+            lines.append("")
+            lines.append("reference:       x %+5d  y %+5d  z %+5d  mg"
+                         % (rx, ry, rz))
+            lines.append("TILT CHANGE:     %.2f deg from reference" % change)
+            lines.append("")
+            lines.append("That angle is the one to trend. It is independent of how")
+            lines.append("the unit is mounted -- it is the angle between the gravity")
+            lines.append("vector now and where it was when you took the reference.")
+    else:
+        lines.append("")
+        lines.append("No reference given. Absolute angles depend on mounting, so")
+        lines.append("they are only meaningful against a baseline. Take one with")
+        lines.append("the assembly known-good and level, then pass it back:")
+        lines.append("    --ref %d,%d,%d" % (x, y, z))
+
+    lines.append("")
+    lines.append("Valid AT REST only -- an accelerometer cannot separate tilt from")
+    lines.append("acceleration. Lags ~1.3 s (0.124 Hz DC tracker). No yaw: rotation")
+    lines.append("about gravity is invisible. Not a protective function.")
+    return "\n".join(lines)
+
+
 def read_all_or_exit(instrument):
     """Read the map, or exit with advice instead of a traceback."""
     try:
@@ -461,6 +556,21 @@ def cmd_dump(instrument, args):
             print("%3d  %-42s %s" % (index, NAMES.get(index, ""), "invalid"))
         else:
             print("%3d  %-42s %6d" % (index, NAMES.get(index, ""), shown))
+
+
+def cmd_tilt(instrument, args):
+    regs = read_all_or_exit(instrument)
+    check_map_version(regs)
+    ref = None
+    if args.ref:
+        try:
+            parts = [int(v) for v in args.ref.split(",")]
+            if len(parts) != 3:
+                raise ValueError
+            ref = tuple(parts)
+        except ValueError:
+            raise SystemExit("--ref wants three signed mg values: x,y,z")
+    print(tilt_report(regs, ref))
 
 
 def cmd_status(instrument, args):
@@ -515,6 +625,13 @@ def main(argv=None):
     sub.add_parser("dump", help="read and print the whole register map")
     sub.add_parser("status", help="print the decoded summary only")
 
+    p = sub.add_parser("tilt", help="derive tilt from the gravity vector "
+                                    "(registers 32-34)")
+    p.add_argument("--ref", metavar="X,Y,Z",
+                   help="baseline gravity vector in signed mg, taken with "
+                        "the assembly known-good. Reports the angle moved "
+                        "since, which is mounting-independent.")
+
     p = sub.add_parser("command", help="send a command and confirm it ran")
     p.add_argument("name", choices=sorted(COMMANDS))
 
@@ -534,6 +651,7 @@ def main(argv=None):
     handlers = {
         "dump": cmd_dump,
         "status": cmd_status,
+        "tilt": cmd_tilt,
         "command": cmd_command,
         "los-threshold": cmd_los_threshold,
         "los-time": cmd_los_time,

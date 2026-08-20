@@ -156,6 +156,42 @@ so the firmware returns 0xFFFF rather than a confident wrong number.
 Even when reported it is a **lower bound** — air drag and pre-release
 motion both shorten true free-fall time.
 
+## Measuring tilt (registers 32–34)
+
+Tilt needs no new firmware. The device already tracks gravity — it has
+to, because the impact path is AC-coupled and needs the DC component
+removed — and **a gravity vector is a tilt measurement**. Registers
+32/33/34 are that vector, **signed, in mg**.
+
+```sh
+tools/ctx311_client.py --port /dev/ttyUSB0 tilt
+tools/ctx311_client.py --port /dev/ttyUSB0 tilt --ref 12,-5,1078
+```
+
+Take a reference with the assembly known-good, then trend the **angle
+between the current vector and that reference**. That number is
+independent of how the unit is mounted, which the absolute per-axis
+angles are not.
+
+**Resolution is better than you would expect.** Near level, one degree
+of tilt moves a horizontal axis by about 18 mg, and the DC tracker is
+heavily filtered: the rev H idle soak recorded the gravity vector moving
+by **single millig over 4 h 48 min** (`HARDWARE_VALIDATION.md`). That is
+a tenth of a degree of stability, measured, not estimated.
+
+### Four limits, none of them fixable in software
+
+| Limit | Consequence |
+|---|---|
+| **Valid at rest only** | An accelerometer cannot separate tilt from linear acceleration — they are the same measurement. While the assembly is jacked, falling, or vibrating, the tilt figure is meaningless. Check register 23 (AC-coupled, near 0 at rest) before trusting it |
+| **Lags ~1.3 s** | The DC tracker corner is 0.124 Hz (τ = 1.28 s), so a step change takes ~4–5 s to settle. Fine for structural tilt, useless for dynamics |
+| **No yaw** | Rotation about the gravity vector does not change the gravity vector. Two axes of freedom, never three |
+| **Not protective** | Nothing here operates an output. The arrest path is registers 49–63. Trending tilt in the PLC is monitoring, and calling it a safety function would be a new claim this device does not support |
+
+Note the magnitude reads **~1080 mg**, not 1000 — that is the part's
+zero-g offset and gain error, and it is normal. Normalise by the
+measured magnitude rather than assuming 1 g.
+
 ## Fault flags (register 61)
 
 | Bit | Name | Detection lost? | Meaning |
