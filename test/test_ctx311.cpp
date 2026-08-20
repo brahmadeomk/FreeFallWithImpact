@@ -269,7 +269,10 @@ static void test_identification_registers()
   printf("identification: regs 42-44\n");
   bootFresh();
 
-  CHECK_EQ(holdingRegs[MapVersionReg], 9, "reg 43 map version");
+  /* 9 -> 10: registers 64-68 added for tilt. Appending cannot make a
+     map-9 master misread what it already reads, but the map changed and
+     a master must acknowledge it, so the version moves. */
+  CHECK_EQ(holdingRegs[MapVersionReg], 10, "reg 43 map version");
   CHECK_EQ(holdingRegs[FwVersionReg], (2 << 8) | 0, "reg 42 firmware version");
   CHECK(holdingRegs[BuildDateReg] != 0, "reg 44 build date is populated");
 
@@ -868,6 +871,205 @@ static void test_arming_is_distinguishable_from_a_fault()
   CHECK(!faultBit,  "a fault after arming leaves reg 49 bit 6 clear");
 }
 
+/* ===================================================================== */
+/*  tilt -- registers 64-68. MONITORING ONLY                             */
+/* ===================================================================== */
+
+/* True angle between two integer vectors, in tenths of a degree, using
+   doubles. The comparison is against the SAME integers the firmware
+   gets, so this measures the algorithm and not input quantisation. */
+static double trueAngleTenths(int x1, int y1, int z1, int x2, int y2, int z2)
+{
+  double m1 = sqrt((double)x1*x1 + (double)y1*y1 + (double)z1*z1);
+  double m2 = sqrt((double)x2*x2 + (double)y2*y2 + (double)z2*z2);
+  double d  = ((double)x1*x2 + (double)y1*y2 + (double)z1*z2) / (m1 * m2);
+  if (d >  1.0) d =  1.0;
+  if (d < -1.0) d = -1.0;
+  return acos(d) * 180.0 / M_PI * 10.0;
+}
+
+static void test_angle_between_is_accurate()
+{
+  printf("tilt: angleBetween swept against double precision\n");
+
+  /* 1 g is ~277 counts at 3.9 mg/LSB, so this is the real operating
+     magnitude, and the one where integer error is worst. */
+  const int MAG = 277;
+  double worst = 0.0; int worstDeg = -1;
+
+  for (int tenth = 0; tenth <= 1800; tenth++) {
+    double th = tenth / 10.0 * M_PI / 180.0;
+    int ry = (int)lround(MAG * sin(th));
+    int rz = (int)lround(MAG * cos(th));
+
+    uint16_t got  = angleBetween(0, ry, rz, 0, 0, MAG);
+    double   want = trueAngleTenths(0, ry, rz, 0, 0, MAG);
+    double   err  = fabs((double)got - want);
+    if (err > worst) { worst = err; worstDeg = tenth; }
+  }
+  printf("  worst error %.2f tenths of a degree (at %.1f deg)\n",
+         worst, worstDeg / 10.0);
+  CHECK(worst <= 3.0,
+        "integer angle within 0.3 deg of true across 0-180: got %.2f tenths",
+        worst);
+
+  /* Small angles are the ones that matter -- structural tilt is a few
+     degrees, and that is exactly where a dot-product form would lose
+     precision. Hold this range tighter. */
+  double worstSmall = 0.0;
+  for (int tenth = 0; tenth <= 300; tenth++) {
+    double th = tenth / 10.0 * M_PI / 180.0;
+    int ry = (int)lround(MAG * sin(th));
+    int rz = (int)lround(MAG * cos(th));
+    uint16_t got  = angleBetween(0, ry, rz, 0, 0, MAG);
+    double   want = trueAngleTenths(0, ry, rz, 0, 0, MAG);
+    double   err  = fabs((double)got - want);
+    if (err > worstSmall) worstSmall = err;
+  }
+  printf("  worst error below 30 deg: %.2f tenths\n", worstSmall);
+  CHECK(worstSmall <= 5.0,
+        "within 0.5 deg below 30 deg: got %.2f tenths", worstSmall);
+
+  /* Degenerate inputs must not return a confident wrong angle. */
+  CHECK_EQ(angleBetween(0, 0, 0, 0, 0, MAG), TILT_INVALID,
+           "a zero vector has no direction");
+  CHECK_EQ(angleBetween(0, 0, MAG, 0, 0, 0), TILT_INVALID,
+           "a zero reference has no direction");
+  CHECK_EQ(angleBetween(0, 0, MAG, 0, 0, MAG), 0, "identical vectors read 0");
+
+  /* Full scale must not overflow: 16 g is ~4096 counts. */
+  uint16_t fs = angleBetween(4096, 0, 0, 0, 0, 4096);
+  CHECK(fs >= 895 && fs <= 905,
+        "orthogonal at full scale is ~90 deg: got %u tenths", fs);
+}
+
+/* Put the device at rest with a known gravity vector. */
+static void restAt(int16_t gx, int16_t gy, int16_t gz)
+{
+  b_dcX = gx; b_dcY = gy; b_dcZ = gz;
+  r1msV = 0;                       /* no AC motion */
+  g_millis += TILT_REST_MS + TILT_UPDATE_MS + 1;
+  updateTilt();
+}
+
+static void test_tilt_updates_only_at_rest()
+{
+  printf("tilt: updates at rest, HOLDS while moving\n");
+  armed();
+  tiltRefX = tiltRefY = tiltRefZ = 0;
+  tiltAngle = TILT_INVALID;
+  tiltStillSinceMs = g_millis;
+  tiltLastUpdateMs = 0;
+
+  /* Level, and take a reference. */
+  restAt(0, 0, 277);
+  CHECK(tiltAtRest, "still for long enough counts as at rest");
+  CHECK(setTiltReference(), "reference accepted at rest");
+  CHECK_EQ(tiltAngle, 0, "zero degrees from itself");
+
+  /* Tilt it ~10 deg and let it settle. */
+  restAt(0, 48, 273);
+  CHECK(tiltAngle >= 90 && tiltAngle <= 110,
+        "reads ~10 deg: got %u tenths", tiltAngle);
+
+  uint16_t held = tiltAngle;
+
+  /* Now move it. The angle must FREEZE -- an accelerometer in motion
+     cannot tell tilt from acceleration, so the last resting value is
+     the only honest thing to report. */
+  b_dcX = 0; b_dcY = 200; b_dcZ = 190;    /* would be ~45 deg if trusted */
+  r1msV = 500;                            /* moving */
+  g_millis += 5000;
+  updateTilt();
+  CHECK(!tiltAtRest, "movement clears the at-rest flag");
+  CHECK_EQ(tiltAngle, held, "angle HOLDS while moving, does not track");
+
+  /* Going still is not enough on its own -- it must stay still. */
+  r1msV = 0;
+  g_millis += TILT_REST_MS / 2;
+  updateTilt();
+  CHECK(!tiltAtRest, "briefly still is not yet at rest");
+  CHECK_EQ(tiltAngle, held, "still holding");
+
+  /* Past the settle window it updates again. */
+  g_millis += TILT_REST_MS;
+  updateTilt();
+  CHECK(tiltAtRest, "at rest once the window passes");
+  CHECK(tiltAngle >= 400 && tiltAngle <= 500,
+        "now tracks the new attitude: got %u tenths", tiltAngle);
+}
+
+static void test_tilt_reference_refused_while_moving()
+{
+  printf("tilt: reference refused unless at rest\n");
+  armed();
+  tiltRefX = tiltRefY = tiltRefZ = 0;
+  tiltStillSinceMs = g_millis;
+  tiltLastUpdateMs = 0;
+
+  b_dcX = 0; b_dcY = 0; b_dcZ = 277;
+  r1msV = 500;                            /* moving */
+  g_millis += 10000;
+  updateTilt();
+
+  holdingRegs[CommandReg] = CMD_SET_TILT_REF;
+  checkCommandRegister();
+  CHECK_EQ(holdingRegs[CommandStatusReg], CMD_STATUS_UNKNOWN,
+           "refused while moving, and the refusal is reported");
+  CHECK(tiltRefX == 0 && tiltRefY == 0 && tiltRefZ == 0,
+        "no reference was stored");
+
+  /* At rest, the same command is accepted. */
+  restAt(0, 0, 277);
+  holdingRegs[CommandReg] = CMD_SET_TILT_REF;
+  checkCommandRegister();
+  CHECK_EQ(holdingRegs[CommandStatusReg], CMD_STATUS_ACCEPTED,
+           "accepted once at rest");
+  CHECK_EQ(tiltRefZ, 277, "reference stored");
+}
+
+static void test_tilt_publishes_and_never_trips()
+{
+  printf("tilt: publishes regs 64-68 and operates nothing\n");
+  armed();
+  faultFlags = 0; cfgWasDefaulted = false;   /* isolate from the blank EEPROM */
+  tiltRefX = tiltRefY = tiltRefZ = 0;
+  tiltAngle = TILT_INVALID;
+  tiltStillSinceMs = g_millis;
+  tiltLastUpdateMs = 0;
+
+  publishBlock();
+  CHECK_EQ(holdingRegs[TiltAngleReg], TILT_INVALID,
+           "no reference -> reg 64 is invalid, not 0");
+  CHECK_EQ(holdingRegs[TiltStatusReg] & TILT_ST_REF_SET, 0, "reg 65 bit0 clear");
+
+  restAt(0, 0, 277);
+  setTiltReference();
+  restAt(0, 48, 273);
+  publishBlock();
+
+  CHECK(holdingRegs[TiltStatusReg] & TILT_ST_REF_SET, "reg 65 bit0 set");
+  CHECK(holdingRegs[TiltStatusReg] & TILT_ST_AT_REST, "reg 65 bit1 set");
+  CHECK(holdingRegs[TiltStatusReg] & TILT_ST_VALID,   "reg 65 bit2 set");
+  CHECK_EQ((int16_t)holdingRegs[TiltRefZReg], countsToMgSigned(277),
+           "reg 68 echoes the reference in mg");
+
+  /* The whole point: tilt is monitoring. It must not touch an output or
+     raise a fault, however far it has tilted. */
+  CHECK(PORTC & (1 << LOS_PORT_BIT),   "arrest output untouched by tilt");
+  CHECK(PORTC & (1 << OUTPUT_PORT_BIT),"impact output untouched by tilt");
+  CHECK(!losLatched, "tilt never latches the arrest");
+  CHECK_EQ(faultFlags, 0, "tilt raises no fault");
+
+  /* Clearing the reference invalidates the angle rather than reporting
+     a stale one. */
+  holdingRegs[CommandReg] = CMD_CLEAR_TILT_REF;
+  checkCommandRegister();
+  publishBlock();
+  CHECK_EQ(holdingRegs[TiltAngleReg], TILT_INVALID,
+           "cleared reference -> invalid, not a stale angle");
+}
+
 static void test_status_bit2_removed()
 {
   printf("CTX311: status bit 2 removed -- it was a permanent fault light\n");
@@ -917,6 +1119,10 @@ int main()
   test_health_is_open_while_arming();
   test_health_closes_once_armed();
   test_arming_is_distinguishable_from_a_fault();
+  test_angle_between_is_accurate();
+  test_tilt_updates_only_at_rest();
+  test_tilt_reference_refused_while_moving();
+  test_tilt_publishes_and_never_trips();
   test_status_bit2_removed();
 
   printf("\n%d checks, %d failures\n", checks, failures);

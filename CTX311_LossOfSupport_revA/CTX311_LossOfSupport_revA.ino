@@ -363,6 +363,7 @@
 #include <EEPROM.h>
 #include <util/atomic.h>
 #include <avr/wdt.h>
+#include <avr/pgmspace.h>
 #include "SimpleModbusSlave.h"
 #include "SparkFun_ADXL345-master/SparkFun_ADXL345.cpp"
 
@@ -517,6 +518,30 @@
 
 #define SETTLE_SAMPLES 3200U           /* 2 s trip suppression at boot */
 
+/* Stillness gate. 30 mg is comfortably above the resting noise of the
+   1 s RMS (single mg on a real unit -- see HARDWARE_VALIDATION.md) and
+   comfortably below any real movement. */
+#define TILT_REST_MG      30U
+
+/* How long it must stay still before the angle is trusted. The DC
+   tracker has tau = 1.28 s, so after motion the gravity vector needs
+   several tau to settle. 4 s is ~3.1 tau (~95%). Shorter would publish
+   an angle the tracker has not finished converging to -- which reads as
+   the structure slowly drifting when it is only the filter catching up. */
+#define TILT_REST_MS      4000UL
+
+/* Recompute cadence once at rest. The tracker cannot move faster than
+   its own time constant, so 1 Hz is already generous. */
+#define TILT_UPDATE_MS    1000UL
+
+#define TILT_INVALID      0xFFFFU
+
+/* Reg 65 bits */
+#define TILT_ST_REF_SET   0x01
+#define TILT_ST_AT_REST   0x02
+#define TILT_ST_VALID     0x04
+
+
 /* ------------------------- IDENTIFICATION --------------------------
    FW_VERSION      what code is running.  Packed major<<8 | minor.
    REGISTER_MAP_VERSION  what the MASTER needs to interpret the data.
@@ -544,7 +569,7 @@
 #define FW_VERSION_MAJOR      2
 #define FW_VERSION_MINOR      0          /* CTX311 revision A */
 #define FW_VERSION_PACKED     (((FW_VERSION_MAJOR) << 8) | (FW_VERSION_MINOR))
-#define REGISTER_MAP_VERSION  9
+#define REGISTER_MAP_VERSION  10
 
 #define BUILD_YEAR  ((__DATE__[7]-'0')*1000 + (__DATE__[8]-'0')*100 + \
                      (__DATE__[9]-'0')*10   + (__DATE__[10]-'0'))
@@ -568,6 +593,8 @@
 #define CMD_CLEAR_LOS       0x0004     /* clear the LOS latch, re-arm */
 #define CMD_CLEAR_LOSCOUNT  0x0005     /* zero reg 54 only */
 #define CMD_CLEAR_FAULTS    0x0006     /* clear latched fault bits */
+#define CMD_SET_TILT_REF    0x0007     /* capture tilt reference (at rest) */
+#define CMD_CLEAR_TILT_REF  0x0008     /* forget the tilt reference       */
 
 /* Command status codes, published in reg 46 */
 #define CMD_STATUS_IDLE     0          /* no command since boot */
@@ -665,6 +692,13 @@ enum
   BootCheckReg,        /* 62 BOOT_PENDING/PASS/FAIL */
   LosFaultActionReg,   /* 63 R/W SETTING 0 = health output only,
                               1 = a fault also trips LOS. DEFAULT 1. */
+  /* ---- tilt, map version 10. MONITORING ONLY, operates nothing ---- */
+  TiltAngleReg,        /* 64 tenths of a degree from the reference,
+                              0xFFFF = not valid                      */
+  TiltStatusReg,       /* 65 bit0 ref set, bit1 at rest, bit2 valid   */
+  TiltRefXReg,         /* 66 reference gravity X, mg *** SIGNED ***   */
+  TiltRefYReg,         /* 67 reference gravity Y, mg *** SIGNED ***   */
+  TiltRefZReg,         /* 68 reference gravity Z, mg *** SIGNED ***   */
   HOLDING_REGS_SIZE
 };
 
@@ -780,6 +814,12 @@ struct Config {
   uint16_t losTimeMs;
   uint32_t losHoldMs;
   uint8_t  losFaultAction;
+  /* Tilt reference, in COUNTS. All three zero means "no reference set"
+     -- a real gravity vector can never be zero, so no extra flag byte
+     is needed to mark it unset. */
+  int16_t  tiltRefX;
+  int16_t  tiltRefY;
+  int16_t  tiltRefZ;
 };
 
 Config   cfg;
@@ -789,6 +829,18 @@ uint16_t losThresholdMg  = DEFAULT_LOS_THRESHOLD_MG;
 uint16_t losTimeMs       = DEFAULT_LOS_TIME_MS;
 uint32_t losHoldMs       = DEFAULT_LOS_HOLD_MS;
 uint8_t  losFaultAction  = 1;
+
+/* Tilt state. Loop context only -- the ISR never touches any of it. */
+static int16_t       tiltRefX = 0, tiltRefY = 0, tiltRefZ = 0;
+static uint16_t      tiltAngle = TILT_INVALID;
+static uint8_t       tiltAtRest = 0;
+static unsigned long tiltStillSinceMs = 0;
+static unsigned long tiltLastUpdateMs = 0;
+
+/* Defined further down, next to the tilt maths, but called from the
+   command handler above it. The .ino is compiled directly by the host
+   tests, so there is no Arduino auto-prototyping to lean on. */
+static bool setTiltReference();
 bool     cfgWasDefaulted = false;
 uint8_t  resetCause      = 0;
 
@@ -916,6 +968,12 @@ void writeConfig()
   EEPROM.update(EEPROM_ADDR + 15, (uint8_t)(cfg.losHoldMs >> 16) & 0xFF);
   EEPROM.update(EEPROM_ADDR + 16, (uint8_t)(cfg.losHoldMs >> 24) & 0xFF);
   EEPROM.update(EEPROM_ADDR + 17, cfg.losFaultAction);
+  EEPROM.update(EEPROM_ADDR + 19, lowByte((uint16_t)cfg.tiltRefX));
+  EEPROM.update(EEPROM_ADDR + 20, highByte((uint16_t)cfg.tiltRefX));
+  EEPROM.update(EEPROM_ADDR + 21, lowByte((uint16_t)cfg.tiltRefY));
+  EEPROM.update(EEPROM_ADDR + 22, highByte((uint16_t)cfg.tiltRefY));
+  EEPROM.update(EEPROM_ADDR + 23, lowByte((uint16_t)cfg.tiltRefZ));
+  EEPROM.update(EEPROM_ADDR + 24, highByte((uint16_t)cfg.tiltRefZ));
 }
 
 void applyDefaults()
@@ -927,6 +985,10 @@ void applyDefaults()
   cfg.losTimeMs      = DEFAULT_LOS_TIME_MS;
   cfg.losHoldMs      = DEFAULT_LOS_HOLD_MS;
   cfg.losFaultAction = 1;                    /* fail to safe */
+  /* No tilt reference. It describes where this unit was installed, not
+     what the product is, so a factory reset must forget it rather than
+     carry a stale one into a different mounting. */
+  cfg.tiltRefX = cfg.tiltRefY = cfg.tiltRefZ = 0;
   writeConfig();
   currentSlaveId = cfg.slaveId;
   thresholdMg    = cfg.thresholdMg;
@@ -934,6 +996,9 @@ void applyDefaults()
   losTimeMs      = cfg.losTimeMs;
   losHoldMs      = cfg.losHoldMs;
   losFaultAction = cfg.losFaultAction;
+  tiltRefX = cfg.tiltRefX;
+  tiltRefY = cfg.tiltRefY;
+  tiltRefZ = cfg.tiltRefZ;
   recomputeThresholdCounts();
   recomputeLosParams();
 }
@@ -955,6 +1020,12 @@ void loadConfig()
                        ((uint32_t)EEPROM.read(EEPROM_ADDR + 15) << 16) |
                        ((uint32_t)EEPROM.read(EEPROM_ADDR + 16) << 24);
   cfg.losFaultAction = EEPROM.read(EEPROM_ADDR + 17);
+  cfg.tiltRefX = (int16_t)((uint16_t)EEPROM.read(EEPROM_ADDR + 19) |
+                 ((uint16_t)EEPROM.read(EEPROM_ADDR + 20) << 8));
+  cfg.tiltRefY = (int16_t)((uint16_t)EEPROM.read(EEPROM_ADDR + 21) |
+                 ((uint16_t)EEPROM.read(EEPROM_ADDR + 22) << 8));
+  cfg.tiltRefZ = (int16_t)((uint16_t)EEPROM.read(EEPROM_ADDR + 23) |
+                 ((uint16_t)EEPROM.read(EEPROM_ADDR + 24) << 8));
 
   bool bad = (cfg.magic != CONFIG_MAGIC) ||
              (cfg.slaveId < 1) || (cfg.slaveId > 247) ||
@@ -977,6 +1048,9 @@ void loadConfig()
     losTimeMs      = cfg.losTimeMs;
     losHoldMs      = cfg.losHoldMs;
     losFaultAction = cfg.losFaultAction;
+    tiltRefX = cfg.tiltRefX;
+    tiltRefY = cfg.tiltRefY;
+    tiltRefZ = cfg.tiltRefZ;
     recomputeThresholdCounts();
     recomputeLosParams();
   }
@@ -1117,6 +1191,18 @@ void checkCommandRegister()
           PORTC |= (1 << LOS_PORT_BIT);  /* atomic SBI -- re-arm */
         }
       }
+      break;
+
+    /* Monitoring only -- neither of these can affect an output. */
+    case CMD_SET_TILT_REF:
+      accepted = setTiltReference() ? 1 : 0;
+      break;
+
+    case CMD_CLEAR_TILT_REF:
+      tiltRefX = tiltRefY = tiltRefZ = 0;
+      cfg.tiltRefX = cfg.tiltRefY = cfg.tiltRefZ = 0;
+      writeConfig();
+      tiltAngle = TILT_INVALID;
       break;
 
     case CMD_CLEAR_LOSCOUNT:
@@ -1679,6 +1765,206 @@ static uint16_t stackUnusedBytes(void) { return 0; }
 
 #endif  /* CTX311_STACK_DEBUG */
 
+
+/* ==================================================================== */
+/*  tilt  --  MONITORING ONLY, never protective                         */
+/* ==================================================================== */
+/* Tilt needs no new sensing. The DC tracker already follows gravity --
+   it has to, because everything below it is AC-coupled -- and a gravity
+   vector IS a tilt measurement. This turns that vector into an angle
+   against a stored reference and publishes it. Nothing here touches an
+   output, sets a fault, or is reachable from the arrest path.
+
+   READ THIS BEFORE USING IT FOR ANYTHING:
+
+   1. VALID AT REST ONLY. An accelerometer cannot separate tilt from
+      linear acceleration -- they are the same measurement. While the
+      assembly is jacked, falling, or vibrating, a "tilt" derived from
+      it is meaningless. So the angle is updated ONLY after the 1 s
+      AC-coupled vector RMS has stayed below TILT_REST_MG continuously
+      for TILT_REST_MS, and it HOLDS its last value the rest of the
+      time. A held value is the last trustworthy reading, not the
+      current attitude.
+
+   2. IT IS NOT A PROTECTIVE FUNCTION. It operates nothing. Trend it,
+      alarm on it in the PLC if you like, but the arrest path is
+      registers 49-63 and this is deliberately not part of it. Wiring
+      tilt into a safety decision would be a new claim this device
+      cannot support.
+
+   3. NO YAW. Rotation about the gravity vector does not move the
+      gravity vector, so it is invisible. Two axes, never three.       */
+
+/* 1024 * sin(theta) for theta = 0..90 degrees, one entry per degree.
+   In flash, not SRAM: 182 bytes of .bss would be 18% of what is free.
+
+   Used BACKWARDS -- given a chord we search for the angle. Indexing by
+   angle rather than by sine is what keeps the accuracy uniform: asin is
+   near-vertical approaching 90 degrees, so a table indexed by sine
+   would interpolate very badly exactly there. */
+static const uint16_t tiltSinTable[91] PROGMEM = {
+     0,   18,   36,   54,   71,   89,  107,  125,
+   143,  160,  178,  195,  213,  230,  248,  265,
+   282,  299,  316,  333,  350,  367,  384,  400,
+   416,  433,  449,  465,  481,  496,  512,  527,
+   543,  558,  573,  587,  602,  616,  630,  644,
+   658,  672,  685,  698,  711,  724,  737,  749,
+   761,  773,  784,  796,  807,  818,  828,  839,
+   849,  859,  868,  878,  887,  896,  904,  912,
+   920,  928,  935,  943,  949,  956,  962,  968,
+   974,  979,  984,  989,  994,  998, 1002, 1005,
+  1008, 1011, 1014, 1016, 1018, 1020, 1022, 1023,
+  1023, 1024, 1024
+};
+
+/* Angle between two vectors, in TENTHS OF A DEGREE, integer only.
+
+   Method: normalise both to length 1024, then take the chord between
+   the normalised tips. chord = 2 * 1024 * sin(theta/2), so a lookup of
+   chord/2 in the sine table gives theta/2 directly.
+
+   The chord form is used rather than the more obvious dot-product
+   arccos because it stays well conditioned at SMALL angles, which is
+   the whole point here -- structural tilt is a few degrees, not ninety.
+   A dot product loses precision exactly where this needs it: near zero,
+   cos(theta) is flat, so a one-count error in the dot swamps the angle.
+
+   Returns TILT_INVALID if either vector is too short to have a
+   direction. */
+static uint16_t angleBetween(int16_t ax, int16_t ay, int16_t az,
+                             int16_t bx, int16_t by, int16_t bz)
+{
+  uint32_t ma2 = (uint32_t)((int32_t)ax * ax) +
+                 (uint32_t)((int32_t)ay * ay) +
+                 (uint32_t)((int32_t)az * az);
+  uint32_t mb2 = (uint32_t)((int32_t)bx * bx) +
+                 (uint32_t)((int32_t)by * by) +
+                 (uint32_t)((int32_t)bz * bz);
+
+  uint16_t ma = isqrt32(ma2);
+  uint16_t mb = isqrt32(mb2);
+  if (ma < 32 || mb < 32) return TILT_INVALID;   /* no usable direction */
+
+  /* Normalise to 1024. Divides are fine here: this is loop() context,
+     at most once a second, and never the ISR. */
+  int16_t nax = (int16_t)(((int32_t)ax * 1024L) / ma);
+  int16_t nay = (int16_t)(((int32_t)ay * 1024L) / ma);
+  int16_t naz = (int16_t)(((int32_t)az * 1024L) / ma);
+  int16_t nbx = (int16_t)(((int32_t)bx * 1024L) / mb);
+  int16_t nby = (int16_t)(((int32_t)by * 1024L) / mb);
+  int16_t nbz = (int16_t)(((int32_t)bz * 1024L) / mb);
+
+  /* The chord is well conditioned for SMALL angles and badly conditioned
+     near 180 degrees, where sin(theta/2) flattens out against 90 -- the
+     exact mirror of the dot-product form's weakness. So past 90 degrees,
+     measure to the OPPOSITE of the reference instead and subtract from
+     180. Both halves of the range are then computed in the half where
+     the chord is sharp. Without this, error near 175 degrees is ~4.8
+     degrees; with it, the whole range holds under 0.2.
+
+     The switch is at half > 724, which is 1024*sin(45) -- theta = 90. */
+  uint8_t  supplement = 0;
+  int32_t dx = (int32_t)nax - nbx;
+  int32_t dy = (int32_t)nay - nby;
+  int32_t dz = (int32_t)naz - nbz;
+  uint32_t chord2 = (uint32_t)(dx * dx) + (uint32_t)(dy * dy) +
+                    (uint32_t)(dz * dz);
+  uint32_t half = isqrt32(chord2) >> 1;          /* 1024 * sin(theta/2) */
+
+  if (half > 724U) {
+    supplement = 1;
+    dx = (int32_t)nax + nbx;                     /* distance to -b */
+    dy = (int32_t)nay + nby;
+    dz = (int32_t)naz + nbz;
+    chord2 = (uint32_t)(dx * dx) + (uint32_t)(dy * dy) + (uint32_t)(dz * dz);
+    half = isqrt32(chord2) >> 1;
+  }
+  if (half > 1024U) half = 1024U;
+
+  /* Search the table for the bracketing degree, then interpolate. The
+     table is monotonic, so a linear scan of 91 entries is bounded and
+     obvious; a binary search would save microseconds nobody is short
+     of at 1 Hz. */
+  uint8_t d = 0;
+  while (d < 90 && (uint32_t)pgm_read_word(&tiltSinTable[d + 1]) <= half) d++;
+
+  /* Interpolate straight into tenths of the FULL angle, not tenths of
+     the half angle. Scaling by 20 rather than 10 is what makes odd
+     tenths reachable at all -- doubling a half-angle in tenths can only
+     ever produce even ones, which was costing a tenth of a degree for
+     nothing. */
+  uint32_t lo = pgm_read_word(&tiltSinTable[d]);
+  uint32_t frac = 0;
+  if (d < 90) {
+    uint32_t hi = pgm_read_word(&tiltSinTable[d + 1]);
+    if (hi > lo) frac = ((half - lo) * 20UL) / (hi - lo);   /* 0..20 */
+  }
+  uint16_t ang = (uint16_t)(((uint32_t)d * 20UL) + frac);
+  return supplement ? (uint16_t)(1800U - ang) : ang;
+}
+
+/* Called every loop(). Does almost nothing most of the time: the gate
+   is cheap and the maths only runs at 1 Hz once genuinely at rest. */
+static void updateTilt()
+{
+  unsigned long now = millis();
+
+  /* Motion gate. r1msV is the 1 s AC-coupled vector RMS -- the same
+     quantity register 41 publishes -- which sits at a few mg at rest
+     and lifts immediately on any real movement. Using the 1 s figure
+     rather than an instantaneous one is deliberate: a single quiet
+     sample during motion must not look like rest. */
+  if (countsToMg(r1msV) > TILT_REST_MG) {
+    tiltStillSinceMs = now;      /* restart the stillness timer */
+    tiltAtRest = 0;
+    return;                      /* angle HOLDS its last value */
+  }
+
+  if (now - tiltStillSinceMs < TILT_REST_MS) {
+    tiltAtRest = 0;              /* still enough, but not for long enough */
+    return;
+  }
+  tiltAtRest = 1;
+
+  if (now - tiltLastUpdateMs < TILT_UPDATE_MS) return;
+  tiltLastUpdateMs = now;
+
+  if (tiltRefX == 0 && tiltRefY == 0 && tiltRefZ == 0) {
+    tiltAngle = TILT_INVALID;    /* no reference to measure against */
+    return;
+  }
+
+  int16_t gx, gy, gz;
+  ATOMIC_BLOCK(ATOMIC_RESTORESTATE) { gx = b_dcX; gy = b_dcY; gz = b_dcZ; }
+
+  tiltAngle = angleBetween(gx, gy, gz, tiltRefX, tiltRefY, tiltRefZ);
+}
+
+/* Capture the current gravity vector as the reference.
+
+   REFUSED unless the device is at rest by the same test the angle uses.
+   A reference taken while moving is a wrong baseline that every later
+   reading is measured against, so it is worth refusing rather than
+   silently storing rubbish. */
+static bool setTiltReference()
+{
+  if (!tiltAtRest) return false;
+
+  int16_t gx, gy, gz;
+  ATOMIC_BLOCK(ATOMIC_RESTORESTATE) { gx = b_dcX; gy = b_dcY; gz = b_dcZ; }
+
+  /* A zero vector would read back as "no reference". It cannot happen
+     with a working sensor, but refuse it rather than store a state that
+     means something else. */
+  if (gx == 0 && gy == 0 && gz == 0) return false;
+
+  tiltRefX = gx; tiltRefY = gy; tiltRefZ = gz;
+  cfg.tiltRefX = gx; cfg.tiltRefY = gy; cfg.tiltRefZ = gz;
+  writeConfig();
+  tiltAngle = 0;                 /* by definition, zero from itself */
+  return true;
+}
+
 /* ==================================================================== */
 /*  register publication                                                */
 /* ==================================================================== */
@@ -1862,6 +2148,18 @@ static void publishBlock()
   holdingRegs[RawMagReg]          = countsToMg(isqrt32(rawLive));
   holdingRegs[FaultReg]           = faultFlags;
   holdingRegs[BootCheckReg]       = bootState;
+
+  {
+    uint8_t ts = 0;
+    if (!(tiltRefX == 0 && tiltRefY == 0 && tiltRefZ == 0)) ts |= TILT_ST_REF_SET;
+    if (tiltAtRest)                  ts |= TILT_ST_AT_REST;
+    if (tiltAngle != TILT_INVALID)   ts |= TILT_ST_VALID;
+    holdingRegs[TiltAngleReg]  = tiltAngle;
+    holdingRegs[TiltStatusReg] = ts;
+    holdingRegs[TiltRefXReg] = (unsigned int)(uint16_t)countsToMgSigned(tiltRefX);
+    holdingRegs[TiltRefYReg] = (unsigned int)(uint16_t)countsToMgSigned(tiltRefY);
+    holdingRegs[TiltRefZReg] = (unsigned int)(uint16_t)countsToMgSigned(tiltRefZ);
+  }
 }
 
 /* 1-second RMS. Runs in loop context: the three 64-bit divisions cost
@@ -1956,6 +2254,8 @@ void setup()
   holdingRegs[ThresholdEffReg]    = thresholdMg;
   holdingRegs[Rsvd35Reg]          = 0;
   holdingRegs[Rsvd48Reg]          = 0;
+  holdingRegs[TiltAngleReg]       = TILT_INVALID;
+  holdingRegs[TiltStatusReg]      = 0;
   holdingRegs[CommandReg]         = 0;
   holdingRegs[LastCommandReg]     = 0;
   holdingRegs[CommandStatusReg]   = CMD_STATUS_IDLE;
@@ -2039,6 +2339,7 @@ void loop()
   bootCheck();
 
   update1sRms();
+  updateTilt();
 
   uint8_t ready;
   ATOMIC_BLOCK(ATOMIC_RESTORESTATE) { ready = blockReady; }

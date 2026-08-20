@@ -36,8 +36,8 @@ import math
 import sys
 import time
 
-EXPECTED_MAP_VERSION = 9
-REGISTER_COUNT = 64
+EXPECTED_MAP_VERSION = 10
+REGISTER_COUNT = 69
 
 # register indices used by name
 SLAVE_ID = 21
@@ -66,13 +66,28 @@ FAULT_FLAGS = 61
 BOOT_CHECK = 62
 FAULT_ACTION = 63
 
+TILT_ANGLE = 64         # tenths of a degree, 0xFFFF = not valid
+TILT_STATUS = 65
+TILT_REF_X = 66
+TILT_REF_Y = 67
+TILT_REF_Z = 68
+
+TILT_INVALID = 0xFFFF
+
+# Register 65 bits.
+TILT_STATUS_BITS = (
+    (0x01, "reference set"),
+    (0x02, "at rest -- angle is being updated"),
+    (0x04, "angle valid"),
+)
+
 HEIGHT_INVALID = 0xFFFF
 
 DC_X = 32               # gravity vector, SIGNED mg -- see the tilt command
 DC_Y = 33
 DC_Z = 34
 
-SIGNED_REGISTERS = (32, 33, 34)
+SIGNED_REGISTERS = (32, 33, 34, 66, 67, 68)
 RESERVED_REGISTERS = (35, 48)
 
 # Register 48 reads 0 in a release build. A firmware built with
@@ -89,6 +104,8 @@ COMMANDS = {
     "clear-los": 0x0004,
     "clear-loscount": 0x0005,
     "clear-faults": 0x0006,
+    "set-tilt-ref": 0x0007,
+    "clear-tilt-ref": 0x0008,
     "factory-reset": 0x5A5A,
 }
 
@@ -159,6 +176,9 @@ NAMES = {
     59: "LOS output hold (ms, 0=latch) [R/W]",
     60: "live raw magnitude (mg, GRAVITY INCLUDED)",
     61: "fault flags", 62: "boot check", 63: "fault action [R/W]",
+    64: "tilt angle (0.1 deg, 0xFFFF=invalid)", 65: "tilt status bits",
+    66: "tilt ref X (mg, signed)", 67: "tilt ref Y (mg, signed)",
+    68: "tilt ref Z (mg, signed)",
 }
 
 
@@ -355,7 +375,13 @@ def send_command(instrument, name, timeout=2.0):
             faults = instrument.read_register(FAULT_FLAGS, functioncode=3)
             action = instrument.read_register(FAULT_ACTION, functioncode=3)
             reason = ""
-            if name == "clear-los" and (faults & DETECTION_LOST_MASK) and action:
+            if name == "set-tilt-ref":
+                reason = (" -- the device is not at rest. The reference is "
+                          "the baseline every later reading is measured "
+                          "against, so it is only taken once the unit has "
+                          "been still long enough for the DC tracker to "
+                          "settle. Stop the machine and retry.")
+            elif name == "clear-los" and (faults & DETECTION_LOST_MASK) and action:
                 lost, _ = decode_faults(faults)
                 reason = (" -- the detection channel is still faulted (%s). "
                           "Fix the fault, then clear-faults, then retry."
@@ -438,6 +464,22 @@ def print_summary(regs):
         print("   is reporting minimum free SRAM there. That build is for")
         print("   the soak run only -- reflash with a release image before")
         print("   the device goes back into service.")
+
+    print()
+    ang = regs[TILT_ANGLE]
+    st = regs[TILT_STATUS]
+    flags = [n for b, n in TILT_STATUS_BITS if st & b]
+    print("tilt (reg 64):   %s"
+          % ("not valid -- no reference set, or never yet at rest"
+             if ang == TILT_INVALID else "%.1f deg from reference" % (ang / 10.0)))
+    print("  status:        %s" % (", ".join(flags) if flags else "none"))
+    if st & 0x01:
+        print("  reference:     x %+d  y %+d  z %+d mg"
+              % (as_signed(regs[TILT_REF_X]), as_signed(regs[TILT_REF_Y]),
+                 as_signed(regs[TILT_REF_Z])))
+    if ang != TILT_INVALID and not (st & 0x02):
+        print("  NOTE: not at rest -- this angle is HELD from the last time")
+        print("        it was, not the attitude right now.")
 
     print()
     print("live raw magnitude (reg 60): %d mg" % regs[RAW_MAG])

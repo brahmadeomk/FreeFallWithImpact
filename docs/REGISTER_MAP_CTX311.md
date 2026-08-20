@@ -1,10 +1,11 @@
-# CTX311 register map — map version 9 (firmware rev A)
+# CTX311 register map — map version 10 (firmware rev A)
 
 Modbus RTU slave, 9600 8N1, default slave ID 71. All registers are
 holding registers (function 3 to read, 6 or 16 to write).
 
-**Read register 43 on connect.** It carries the map version. A CTX310
-master expecting version 8 must refuse to ingest — and CTX311 changes
+**Read register 43 on connect.** It carries the map version, now **10**
+(9 added the loss-of-support block; 10 adds tilt in registers 64–68). A
+CTX310 master expecting version 8 must refuse to ingest — and CTX311 changes
 more than the map, so this check matters more than it did before.
 
 ## Read this before wiring anything
@@ -80,7 +81,7 @@ commissioning question about whether a reset can occur under load.
 |---|---|
 | Impact threshold floor raised 10 → **1200 mg** | An existing config below 1200 mg is rejected into defaults on first boot. Check register 22 after upgrading |
 | Status register 25 **bit 2 removed** | Dashboards keying on it must be updated. It re-latched within seconds of any clear, so it was a permanent fault light for normal polling. Register 26 remains the counter |
-| Registers 49–63 added | Response is now 133 bytes for a full sweep; library `BUFFER_SIZE` raised 128 → 160 |
+| Registers 49–68 added | Response is now 143 bytes for a full sweep; library `BUFFER_SIZE` raised 128 → 160 |
 | Watchdog **enabled** | A hung device now resets instead of holding the output wherever it was. Register 29 will show WDRF and register 61 will latch `FAULT_WDT_RESET` |
 | EEPROM offsets 0–6 unchanged | Slave ID and impact threshold survive the upgrade, as they did across G→H |
 
@@ -120,7 +121,7 @@ only — see `docs/RESOURCE_BUDGET.md`. If a device in the field reads
 non-zero at register 48, it is running a debug build and should be
 reflashed with a release image.
 
-## New registers (49–63)
+## New registers (49–68)
 
 | Reg | Name | Access | Units / notes |
 |---|---|---|---|
@@ -139,6 +140,11 @@ reflashed with a release image.
 | 61 | Fault flags | R | see below |
 | 62 | Boot check | R | 0 pending, 1 pass, 2 fail |
 | 63 | Fault action | **R/W** | 0 = health output only, 1 = a detection-lost fault also arrests. **Default 1** |
+| 64 | Tilt angle | R | 0.1°, **0xFFFF = not valid**. Monitoring only — see the tilt section |
+| 65 | Tilt status | R | bit0 ref set, bit1 at rest, bit2 valid |
+| 66 | Tilt reference X | R | mg, **SIGNED** |
+| 67 | Tilt reference Y | R | mg, **SIGNED** |
+| 68 | Tilt reference Z | R | mg, **SIGNED** |
 
 ### Register 56 is the one to trend
 
@@ -156,41 +162,82 @@ so the firmware returns 0xFFFF rather than a confident wrong number.
 Even when reported it is a **lower bound** — air drag and pre-release
 motion both shorten true free-fall time.
 
-## Measuring tilt (registers 32–34)
+## Tilt (registers 64–68) — monitoring only
 
-Tilt needs no new firmware. The device already tracks gravity — it has
-to, because the impact path is AC-coupled and needs the DC component
-removed — and **a gravity vector is a tilt measurement**. Registers
-32/33/34 are that vector, **signed, in mg**.
+**Tilt is not a protective function.** It operates no output, sets no
+fault, and is unreachable from the arrest path. The arrest path is
+registers 49–63. Trend tilt, alarm on it in the PLC if you want to, but
+wiring it into a safety decision would be a claim this device does not
+support.
+
+Tilt needs no extra sensing. The DC tracker already follows gravity —
+it has to, because everything below it is AC-coupled — and a gravity
+vector *is* a tilt measurement. Registers 64–68 turn that vector into an
+angle against a stored reference.
+
+| Reg | Name | Access | Units / notes |
+|---|---|---|---|
+| 64 | **Tilt angle** | R | tenths of a degree from the reference. **0xFFFF = not valid** |
+| 65 | Tilt status | R | bit0 reference set, bit1 at rest, bit2 angle valid |
+| 66 | Tilt reference X | R | mg, **SIGNED** |
+| 67 | Tilt reference Y | R | mg, **SIGNED** |
+| 68 | Tilt reference Z | R | mg, **SIGNED** |
+
+### Setting the reference
+
+The angle is measured against a baseline you capture with the assembly
+installed and known-good:
 
 ```sh
-tools/ctx311_client.py --port /dev/ttyUSB0 tilt
-tools/ctx311_client.py --port /dev/ttyUSB0 tilt --ref 12,-5,1078
+tools/ctx311_client.py --port /dev/ttyUSB0 command set-tilt-ref
 ```
 
-Take a reference with the assembly known-good, then trend the **angle
-between the current vector and that reference**. That number is
-independent of how the unit is mounted, which the absolute per-axis
-angles are not.
+That is command `0x0007`, and it is **refused unless the device is at
+rest** — a baseline taken while moving is wrong, and every later reading
+would be measured against it. `0x0008` (`clear-tilt-ref`) forgets it.
 
-**Resolution is better than you would expect.** Near level, one degree
-of tilt moves a horizontal axis by about 18 mg, and the DC tracker is
-heavily filtered: the rev H idle soak recorded the gravity vector moving
-by **single millig over 4 h 48 min** (`HARDWARE_VALIDATION.md`). That is
-a tenth of a degree of stability, measured, not estimated.
+The reference survives power loss but a **factory reset forgets it**: it
+describes where this unit was installed, not what the product is, and
+carrying a stale one into a different mounting would be worse than
+having none.
 
-### Four limits, none of them fixable in software
+### It updates at rest, and HOLDS otherwise
 
-| Limit | Consequence |
-|---|---|
-| **Valid at rest only** | An accelerometer cannot separate tilt from linear acceleration — they are the same measurement. While the assembly is jacked, falling, or vibrating, the tilt figure is meaningless. Check register 23 (AC-coupled, near 0 at rest) before trusting it |
-| **Lags ~1.3 s** | The DC tracker corner is 0.124 Hz (τ = 1.28 s), so a step change takes ~4–5 s to settle. Fine for structural tilt, useless for dynamics |
-| **No yaw** | Rotation about the gravity vector does not change the gravity vector. Two axes of freedom, never three |
-| **Not protective** | Nothing here operates an output. The arrest path is registers 49–63. Trending tilt in the PLC is monitoring, and calling it a safety function would be a new claim this device does not support |
+An accelerometer cannot separate tilt from linear acceleration — they
+are the same measurement. So the angle is recomputed **only** after the
+1 s AC-coupled vector RMS has stayed below **30 mg** continuously for
+**4 s**, and it **holds its last value** the rest of the time.
 
-Note the magnitude reads **~1080 mg**, not 1000 — that is the part's
-zero-g offset and gain error, and it is normal. Normalise by the
-measured magnitude rather than assuming 1 g.
+The 4 s is not arbitrary: the DC tracker has τ = 1.28 s, so after any
+movement the gravity vector needs several τ to settle. 4 s is ≈ 3.1 τ.
+Publishing sooner would report the filter still converging, which on a
+trend looks exactly like the structure slowly moving.
+
+**A held value is the last trustworthy reading, not the attitude now.**
+Register 65 bit 1 tells you which you are looking at.
+
+| Reg 65 | Meaning |
+|---:|---|
+| 0 | No reference. Register 64 reads 0xFFFF |
+| 1 | Reference set, but never yet at rest long enough |
+| 5 | Reference set, angle valid, **but held** — not at rest right now |
+| 7 | Reference set, at rest, angle live. The normal state |
+
+### Accuracy
+
+Computed with integer maths only — no floating point anywhere in the
+firmware. Swept against double precision across the whole 0–180° range
+at the real 1 g magnitude, the worst error is **0.25°**, and most of
+that is input quantisation: at 3.9 mg/LSB one count is already ~0.2° of
+direction.
+
+Resolution over time is better than that suggests, because the DC
+tracker is heavily filtered — the rev H idle soak recorded the gravity
+vector moving by single millig over 4 h 48 min, which is about a tenth
+of a degree.
+
+**No yaw, ever.** Rotation about the gravity vector does not move the
+gravity vector. Two axes of freedom, never three.
 
 ## Fault flags (register 61)
 

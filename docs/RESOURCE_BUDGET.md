@@ -27,19 +27,25 @@ Arduino Nano, ATmega328P, 16 MHz. 32256 B flash available to the sketch
 
 | | CTX310 rev H | CTX311 rev A |
 |---|---:|---:|
-| Flash (`.text` + `.data`) | 14678 B (44.8 %) | 17630 B (53.8 %) |
-| Static SRAM (`.data` + `.bss`) | 916 B (44.7 %) | **1042 B (50.9 %)** |
-| Free SRAM (static) | 1132 B (55 %) | **1006 B (49 %)** |
-| `.text` | 14620 B | 17564 B |
+| Flash (`.text` + `.data`) | 14678 B (44.8 %) | 19538 B (59.6 %) |
+| Static SRAM (`.data` + `.bss`) | 916 B (44.7 %) | **1075 B (52.5 %)** |
+| Free SRAM (static) | 1132 B (55 %) | **973 B (47 %)** |
+| `.text` | 14620 B | 19472 B |
 | `.data` | 58 B | 66 B |
-| `.bss` | 858 B | 976 B |
+| `.bss` | 858 B | 1009 B |
 
-CTX311 costs **+2952 B flash and +126 B static SRAM** over CTX310. The
+CTX311 costs **+4860 B flash and +159 B static SRAM** over CTX310. The
 SRAM delta is mostly the raised `BUFFER_SIZE` (128 → 160, +32 B) plus the
 loss-of-support state and the extra registers.
 
-**Against the ≥ 15 % free-SRAM acceptance threshold: 49 % free, passes
+**Against the ≥ 15 % free-SRAM acceptance threshold: 47 % free, passes
 with a wide margin.**
+
+The tilt block (map 10) costs **+1908 B flash and +33 B SRAM**. Most of
+the flash is not the 182-byte sine table but the 32-bit divides the
+normalisation needs — the ATmega328P has no divide instruction, so
+libgcc's routines get linked in. The table itself is in PROGMEM: as
+`.bss` it would have been 18 % of the free SRAM.
 
 Figures include the T-05 arming-window change (+50 B flash, no SRAM
 change).
@@ -92,8 +98,8 @@ flag.
 
 | Build | Flash | Static SRAM | `stackPaint` in image |
 |---|---:|---:|---|
-| release | 17630 B | 1042 B | absent |
-| `-DCTX311_STACK_DEBUG` | 17676 B (+46 B) | 1042 B (no change) | present |
+| release | 19538 B | 1075 B | absent |
+| `-DCTX311_STACK_DEBUG` | 19584 B (+46 B) | 1075 B (no change) | present |
 
 Verified in the linked image rather than assumed: the painter survives
 `--gc-sections`, loads `Z = _end` (0x0512), the canary `0xC5`, and loops

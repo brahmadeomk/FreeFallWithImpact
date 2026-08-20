@@ -135,6 +135,23 @@ non-zero, `CLEAR_LOS` will be **refused** until the fault clears.
 | 2 | `0x04` | 4 | **Always 0** — removed in map 9. Register 26 is the blocks-missed counter |
 | 3 | `0x08` | 8 | Config was defaulted at boot |
 
+### Register 65 — Tilt status (bitfield, read-only)
+
+Monitoring only. Nothing here operates an output.
+
+| Bit | Hex | Dec | Meaning |
+|---|---|---:|---|
+| 0 | `0x01` | 1 | Reference set. Without it register 64 reads `0xFFFF` |
+| 1 | `0x02` | 2 | **At rest** — the angle is being updated right now |
+| 2 | `0x04` | 4 | Angle valid |
+
+| Value | Means |
+|---:|---|
+| 0 | No reference. Register 64 is `0xFFFF` |
+| 1 | Reference set, but never yet still long enough to measure |
+| **5** | Valid, **but HELD** — not at rest, so register 64 is the last trustworthy reading, not the attitude now |
+| **7** | Reference set, at rest, angle live. The normal resting state |
+
 ### Register 29 — Reset cause (raw MCUSR, read-only)
 
 More than one can be set.
@@ -173,6 +190,8 @@ Always reads back 0. Confirm through registers 45–47, never by reading 28.
 | `0x0004` | **CLEAR_LOS** | Clears the arrest latch and re-arms. **Refused while a detection-lost fault stands** |
 | `0x0005` | CLEAR_LOSCOUNT | Zeroes LOS trip count (register 54) only |
 | `0x0006` | CLEAR_FAULTS | Clears latched fault bits. A condition still present is re-raised within ~1 s |
+| `0x0007` | SET_TILT_REF | Captures the current gravity vector as the tilt baseline. **Refused unless at rest** |
+| `0x0008` | CLEAR_TILT_REF | Forgets the tilt baseline; register 64 returns to `0xFFFF` |
 | `0x5A5A` | FACTORY_RESET | All settings to defaults, **slave ID returns to 71** |
 
 ### Sentinel values
@@ -180,6 +199,7 @@ Always reads back 0. Confirm through registers 45–47, never by reading 28.
 | Reg | Value | Meaning |
 |---|---|---|
 | 57 height | `0xFFFF` (65535) | **Not valid** — never reached free-fall depth. Not a 655 m fall |
+| 64 tilt | `0xFFFF` (65535) | **Not valid** — no reference set, or never yet at rest. Not 6553.5° |
 | 59 output hold | `0` | Latch until commanded (the default) — not "no hold" |
 | 48 reserved | non-zero | You are running a `-DCTX311_STACK_DEBUG` image. Reflash a release build |
 
