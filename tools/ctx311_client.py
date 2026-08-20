@@ -36,8 +36,8 @@ import math
 import sys
 import time
 
-EXPECTED_MAP_VERSION = 11
-REGISTER_COUNT = 71
+EXPECTED_MAP_VERSION = 12
+REGISTER_COUNT = 73
 
 # register indices used by name
 SLAVE_ID = 21
@@ -77,6 +77,9 @@ TILT_INVALID = 0xFFFF
 VCC = 69                # controller supply now, mV
 VCC_MIN = 70            # lowest since boot or CLEAR_DIAG, mV
 VCC_INVALID = 0xFFFF
+
+SUPPLY_MIN = 71         # R/W advisory limit, mV, 0 = disabled
+SUPPLY_MIN_EFF = 72
 
 # Register 65 bits.
 TILT_STATUS_BITS = (
@@ -141,6 +144,7 @@ FAULT_BITS = (
     (0x0008, "CONFIG", False, "EEPROM defaulted"),
     (0x0010, "BOOTCHECK", True, "boot check failed"),
     (0x0020, "WDT_RESET", False, "watchdog fired (sticky)"),
+    (0x0040, "SUPPLY", False, "controller rail below the reg 71 limit"),
 )
 
 DETECTION_LOST_MASK = sum(bit for bit, _, lost, _ in FAULT_BITS if lost)
@@ -184,6 +188,8 @@ NAMES = {
     66: "tilt ref X (mg, signed)", 67: "tilt ref Y (mg, signed)",
     68: "tilt ref Z (mg, signed)",
     69: "supply now (mV)", 70: "supply minimum (mV)",
+    71: "supply advisory limit (mV, 0=off) [R/W]",
+    72: "supply limit effective (mV)",
 }
 
 
@@ -499,6 +505,9 @@ def print_summary(regs):
             print("     that dips under load reads fine when you poll it.")
         print("  Absolute value is only good to a few percent -- the bandgap")
         print("  is untrimmed. Trend it, and compare a unit against itself.")
+        lim = regs[SUPPLY_MIN]
+        print("  advisory limit (reg 71): %s"
+              % ("disabled" if lim == 0 else "%d mV" % lim))
         rc = regs[29]
         if rc & 0x04:
             print("  !! register 29 bit 2 (BORF): this unit BROWN-OUT RESET.")
@@ -662,6 +671,21 @@ def cmd_los_threshold(instrument, args):
     print("LOS threshold now %d mg" % value)
 
 
+def cmd_supply_limit(instrument, args):
+    check_map_version(read_all_or_exit(instrument))
+    value = set_register(instrument, SUPPLY_MIN, SUPPLY_MIN_EFF,
+                         args.millivolts, "mV")
+    if value == 0:
+        print("low-supply advisory DISABLED")
+    else:
+        print("low-supply advisory limit now %d mV" % value)
+        print("This is ADVISORY: it opens the health output (PC2) and never")
+        print("engages the arrest. If your PLC treats health-open as a stop,")
+        print("a rail below this will stop the machine.")
+        print("Set it below what THIS unit reports healthy in register 69 --")
+        print("the bandgap is untrimmed and reads a few percent out.")
+
+
 def cmd_los_time(instrument, args):
     check_map_version(read_all_or_exit(instrument))
     value = set_register(instrument, LOS_TIME_MS, LOS_TIME_MS_EFF,
@@ -706,6 +730,11 @@ def main(argv=None):
     p = sub.add_parser("los-time", help="set the loss-of-support confirm time")
     p.add_argument("milliseconds", type=int)
 
+    p = sub.add_parser("supply-limit",
+                       help="set the low-supply advisory limit (mV), or 0 "
+                            "to disable it")
+    p.add_argument("millivolts", type=int)
+
     args = parser.parse_args(argv)
 
     global READ_CHUNK, READ_RETRIES, PORT_HINT
@@ -720,6 +749,7 @@ def main(argv=None):
         "command": cmd_command,
         "los-threshold": cmd_los_threshold,
         "los-time": cmd_los_time,
+        "supply-limit": cmd_supply_limit,
     }
 
     try:

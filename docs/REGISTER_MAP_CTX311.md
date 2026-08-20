@@ -1,11 +1,11 @@
-# CTX311 register map — map version 11 (firmware rev A)
+# CTX311 register map — map version 12 (firmware rev A)
 
 Modbus RTU slave, 9600 8N1, default slave ID 71. All registers are
 holding registers (function 3 to read, 6 or 16 to write).
 
-**Read register 43 on connect.** It carries the map version, now **11**
+**Read register 43 on connect.** It carries the map version, now **12**
 (9 added the loss-of-support block, 10 tilt in 64–68, 11 supply
-monitoring in 69–70). A
+monitoring in 69–70, 12 the low-supply advisory in 71–72). A
 CTX310 master expecting version 8 must refuse to ingest — and CTX311 changes
 more than the map, so this check matters more than it did before.
 
@@ -82,7 +82,7 @@ commissioning question about whether a reset can occur under load.
 |---|---|
 | Impact threshold floor raised 10 → **1200 mg** | An existing config below 1200 mg is rejected into defaults on first boot. Check register 22 after upgrading |
 | Status register 25 **bit 2 removed** | Dashboards keying on it must be updated. It re-latched within seconds of any clear, so it was a permanent fault light for normal polling. Register 26 remains the counter |
-| Registers 49–70 added | Response is now 147 bytes for a full sweep; library `BUFFER_SIZE` raised 128 → 160 |
+| Registers 49–72 added | Response is now 151 bytes for a full sweep; library `BUFFER_SIZE` raised 128 → 160, leaving **9 bytes spare** |
 | Watchdog **enabled** | A hung device now resets instead of holding the output wherever it was. Register 29 will show WDRF and register 61 will latch `FAULT_WDT_RESET` |
 | EEPROM offsets 0–6 unchanged | Slave ID and impact threshold survive the upgrade, as they did across G→H |
 
@@ -122,7 +122,7 @@ only — see `docs/RESOURCE_BUDGET.md`. If a device in the field reads
 non-zero at register 48, it is running a debug build and should be
 reflashed with a release image.
 
-## New registers (49–70)
+## New registers (49–72)
 
 | Reg | Name | Access | Units / notes |
 |---|---|---|---|
@@ -148,6 +148,8 @@ reflashed with a release image.
 | 68 | Tilt reference Z | R | mg, **SIGNED** |
 | 69 | **Supply now** | R | mV. `0xFFFF` = not measured yet |
 | 70 | **Supply minimum** | R | mV, lowest since boot or `CLEAR_DIAG`. The sag catcher |
+| 71 | Low-supply limit | **R/W** | mV, 3000–5500, **0 = disabled**. Default 4500 |
+| 72 | Low-supply limit effective | R | echo of 71 |
 
 ### Register 56 is the one to trend
 
@@ -187,6 +189,8 @@ angle against a stored reference.
 | 68 | Tilt reference Z | R | mg, **SIGNED** |
 | 69 | **Supply now** | R | mV. `0xFFFF` = not measured yet |
 | 70 | **Supply minimum** | R | mV, lowest since boot or `CLEAR_DIAG`. The sag catcher |
+| 71 | Low-supply limit | **R/W** | mV, 3000–5500, **0 = disabled**. Default 4500 |
+| 72 | Low-supply limit effective | R | echo of 71 |
 
 ### Setting the reference
 
@@ -309,18 +313,42 @@ describes the reset that started *this* run. `MCUSR` is cleared
 immediately after it is read, so the bits do not accumulate across
 resets and each run reports only its own cause.
 
-### Why there is no supply fault
+### The low-supply advisory (registers 71–72, fault bit 6)
 
-Deliberate. A threshold in firmware would open the health output, which a
-PLC may treat as a stop condition, and the right limit depends on the
-installation's regulator, cable run and load — none of which the device
-knows.
+Register 61 bit 6 (`SUPPLY`, `0x40`) is raised when the rail sits below
+register 71.
 
-This follows the same reasoning that removed the sustained-RMS trip in
-rev H: measure in the device, **alarm on the master**, where the limit
-and its hysteresis are visible and adjustable rather than buried in
-firmware. Register 69 and 70 give the PLC everything it needs to make
-that call.
+**It is ADVISORY.** It opens the health output and never engages the
+arrest — bit 6 is deliberately outside the detection-lost mask, so it
+also does not block `CLEAR_LOS`. A low rail does not mean detection has
+failed: the part is either running correctly or it is not, and if it is
+not, the rate, stuck and plausibility checks catch that on their own
+evidence rather than by inference from a voltage. Engaging a brake
+because a number crossed a configurable threshold — one measured by an
+untrimmed bandgap — would be acting on the weakest signal in the device.
+
+⚠️ **It still has teeth.** If your PLC treats health-open as a stop
+condition, as the map recommends, a rail below this limit *will* stop
+the machine. That is the point of raising it, but plan for it.
+
+**Debounced over 3 consecutive readings** (~3 s at the 1 Hz sampling).
+One bad ADC reading must not open health; three seconds of low rail is a
+supply problem.
+
+**Commission the limit against the actual unit.** Default is 4500 mV,
+because the ATmega328P at 16 MHz is out of spec below 4.5 V — that is
+the line with a technical meaning rather than a round number. But the
+bandgap is untrimmed, so read register 69 on *this* unit with a healthy
+supply and set the limit below what it reports:
+
+```sh
+tools/ctx311_client.py --port /dev/ttyUSB0 supply-limit 4300
+```
+
+**Writing 0 disables it entirely**, which is the escape hatch for a unit
+whose reference reads low enough to alarm on a perfectly good rail.
+Registers 69 and 70 keep working either way, so you lose the alarm, not
+the data.
 
 ## Fault flags (register 61)
 

@@ -274,7 +274,7 @@ static void test_identification_registers()
   /* 9 -> 10: registers 64-68 added for tilt. Appending cannot make a
      map-9 master misread what it already reads, but the map changed and
      a master must acknowledge it, so the version moves. */
-  CHECK_EQ(holdingRegs[MapVersionReg], 11, "reg 43 map version");
+  CHECK_EQ(holdingRegs[MapVersionReg], 12, "reg 43 map version");
   CHECK_EQ(holdingRegs[FwVersionReg], (2 << 8) | 0, "reg 42 firmware version");
   CHECK(holdingRegs[BuildDateReg] != 0, "reg 44 build date is populated");
 
@@ -1179,6 +1179,106 @@ static void test_vcc_never_trips_anything()
   CHECK_EQ(faultFlags, 0, "no fault raised -- the master decides the limit");
 }
 
+static void test_supply_fault_is_debounced()
+{
+  printf("supply: the advisory needs %u consecutive low readings\n",
+         (unsigned)SUPPLY_LOW_CONFIRM);
+  armed();
+  faultFlags = 0; cfgWasDefaulted = false;
+  vccFresh(); supplyLowCount = 0; supplyMinMv = DEFAULT_SUPPLY_MIN_MV;
+
+  feedVcc(225, VCC_DISCARD + 2);            /* ~5.00 V, healthy */
+  runDiagnostics(1589);
+  CHECK_EQ(faultFlags & FAULT_SUPPLY, 0, "healthy rail raises nothing");
+
+  /* One low reading must NOT raise it -- that would open health, and on
+     a PLC that stops on health-open, a single ADC glitch would stop the
+     machine. */
+  feedVcc(270, 1);                          /* ~4.17 V */
+  runDiagnostics(1589);
+  CHECK_EQ(faultFlags & FAULT_SUPPLY, 0, "one low reading is not enough");
+
+  runDiagnostics(1589);
+  CHECK_EQ(faultFlags & FAULT_SUPPLY, 0, "two is not enough either");
+
+  runDiagnostics(1589);
+  CHECK(faultFlags & FAULT_SUPPLY, "raised on the third consecutive reading");
+
+  /* A brief dip that recovers must reset the count, not accumulate. */
+  faultFlags = 0; supplyLowCount = 0;
+  feedVcc(270, 1); runDiagnostics(1589);
+  feedVcc(225, 1); runDiagnostics(1589);    /* recovered */
+  feedVcc(270, 1); runDiagnostics(1589);
+  feedVcc(270, 1); runDiagnostics(1589);
+  CHECK_EQ(faultFlags & FAULT_SUPPLY, 0,
+           "the debounce restarts after a recovery, it does not accumulate");
+}
+
+static void test_supply_fault_is_advisory_not_protective()
+{
+  printf("supply: advisory -- opens health, never engages the arrest\n");
+  armed();
+  faultFlags = 0; cfgWasDefaulted = false;
+  vccFresh(); supplyLowCount = 0; supplyMinMv = DEFAULT_SUPPLY_MIN_MV;
+
+  feedVcc(300, VCC_DISCARD + 2);            /* ~3.75 V */
+  for (int i = 0; i < 4; i++) runDiagnostics(1589);
+
+  CHECK(faultFlags & FAULT_SUPPLY, "raised");
+  CHECK_EQ(faultFlags & FAULT_DETECTION_LOST, 0,
+           "NOT a detection-lost fault");
+  CHECK(!(PORTC & (1 << HEALTH_PORT_BIT)), "health opens");
+  CHECK(PORTC & (1 << LOS_PORT_BIT), "arrest output stays released");
+  CHECK(!losLatched, "the arrest never latches on a low rail");
+
+  /* And it must not block re-arming, the way a detection-lost fault
+     does -- the detection channel is fine. */
+  holdingRegs[CommandReg] = CMD_CLEAR_LOS;
+  checkCommandRegister();
+  CHECK_EQ(holdingRegs[CommandStatusReg], CMD_STATUS_ACCEPTED,
+           "an advisory supply fault does not block CLEAR_LOS");
+
+  /* CLEAR_FAULTS drops the latched bit; a rail still low re-raises it. */
+  holdingRegs[CommandReg] = CMD_CLEAR_FAULTS;
+  checkCommandRegister();
+  CHECK_EQ(faultFlags & FAULT_SUPPLY, 0, "cleared");
+  for (int i = 0; i < 4; i++) runDiagnostics(1589);
+  CHECK(faultFlags & FAULT_SUPPLY, "re-raised while the rail is still low");
+}
+
+static void test_supply_threshold_is_a_setting()
+{
+  printf("supply: reg 71 holds, echoes, rejects, and 0 disables\n");
+  armed();
+  faultFlags = 0; cfgWasDefaulted = false;
+  vccFresh(); supplyLowCount = 0; supplyMinMv = DEFAULT_SUPPLY_MIN_MV;
+
+  CHECK_EQ(supplyMinMv, DEFAULT_SUPPLY_MIN_MV, "defaults to 4500 mV");
+
+  holdingRegs[SupplyMinReg] = 4200;
+  checkLosSettingsUpdate();
+  CHECK_EQ(supplyMinMv, 4200, "accepted");
+  publishBlock();
+  CHECK_EQ(holdingRegs[SupplyMinReg], 4200, "reg 71 holds through a read");
+  CHECK_EQ(holdingRegs[SupplyMinEffReg], 4200, "reg 72 echoes it");
+
+  holdingRegs[SupplyMinReg] = 9000;          /* out of range */
+  checkLosSettingsUpdate();
+  CHECK_EQ(supplyMinMv, 4200, "out-of-range rejected");
+  CHECK_EQ(holdingRegs[SupplyMinReg], 4200, "reverts to the value in force");
+
+  /* 0 disables it -- the escape hatch for a unit whose bandgap reads
+     low enough to alarm on a good rail. */
+  holdingRegs[SupplyMinReg] = 0;
+  checkLosSettingsUpdate();
+  CHECK_EQ(supplyMinMv, 0, "0 accepted");
+
+  feedVcc(400, VCC_DISCARD + 2);             /* ~2.8 V, very low */
+  for (int i = 0; i < 5; i++) runDiagnostics(1589);
+  CHECK_EQ(faultFlags & FAULT_SUPPLY, 0,
+           "disabled means disabled, however low the rail reads");
+}
+
 static void test_status_bit2_removed()
 {
   printf("CTX311: status bit 2 removed -- it was a permanent fault light\n");
@@ -1236,6 +1336,9 @@ int main()
   test_vcc_discards_the_settling_conversions();
   test_vcc_minimum_catches_a_sag();
   test_vcc_never_trips_anything();
+  test_supply_fault_is_debounced();
+  test_supply_fault_is_advisory_not_protective();
+  test_supply_threshold_is_a_setting();
   test_status_bit2_removed();
 
   printf("\n%d checks, %d failures\n", checks, failures);

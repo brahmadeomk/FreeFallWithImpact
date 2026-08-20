@@ -27,14 +27,14 @@ Arduino Nano, ATmega328P, 16 MHz. 32256 B flash available to the sketch
 
 | | CTX310 rev H | CTX311 rev A |
 |---|---:|---:|
-| Flash (`.text` + `.data`) | 14678 B (44.8 %) | 19832 B (60.5 %) |
-| Static SRAM (`.data` + `.bss`) | 916 B (44.7 %) | **1090 B (53.2 %)** |
-| Free SRAM (static) | 1132 B (55 %) | **958 B (46 %)** |
+| Flash (`.text` + `.data`) | 14678 B (44.8 %) | 20162 B (61.5 %) |
+| Static SRAM (`.data` + `.bss`) | 916 B (44.7 %) | **1099 B (53.7 %)** |
+| Free SRAM (static) | 1132 B (55 %) | **949 B (46 %)** |
 | `.text` | 14620 B | 19472 B |
 | `.data` | 58 B | 66 B |
 | `.bss` | 858 B | 1009 B |
 
-CTX311 costs **+5154 B flash and +174 B static SRAM** over CTX310. The
+CTX311 costs **+5484 B flash and +183 B static SRAM** over CTX310. The
 SRAM delta is mostly the raised `BUFFER_SIZE` (128 → 160, +32 B) plus the
 loss-of-support state and the extra registers.
 
@@ -48,7 +48,17 @@ libgcc's routines get linked in. The table itself is in PROGMEM: as
 `.bss` it would have been 18 % of the free SRAM.
 
 Supply monitoring (map 11) costs **+294 B flash and +15 B SRAM** — it
-reuses `isqrt32`-free integer division and the otherwise idle ADC.
+reuses `isqrt32`-free integer division and the otherwise idle ADC. The
+low-supply advisory (map 12) adds a further **+330 B flash and +9 B
+SRAM**.
+
+**Watch the Modbus buffer, not the SRAM.** A full sweep is now 73
+registers = **151 bytes**, against `BUFFER_SIZE` 160 — **9 bytes spare**,
+so roughly four more registers. SRAM is not the binding constraint here;
+the frame is. Raising `BUFFER_SIZE` is affordable on these figures, but
+it was listed out of scope in the work package pending exactly these
+numbers, so it is a decision to take deliberately rather than by
+drifting into it.
 
 Figures include the T-05 arming-window change (+50 B flash, no SRAM
 change).
@@ -101,8 +111,8 @@ flag.
 
 | Build | Flash | Static SRAM | `stackPaint` in image |
 |---|---:|---:|---|
-| release | 19832 B | 1090 B | absent |
-| `-DCTX311_STACK_DEBUG` | 19878 B (+46 B) | 1090 B (no change) | present |
+| release | 20162 B | 1099 B | absent |
+| `-DCTX311_STACK_DEBUG` | 20208 B (+46 B) | 1099 B (no change) | present |
 
 Verified in the linked image rather than assumed: the painter survives
 `--gc-sections`, loads `Z = _end` (0x0512), the canary `0xC5`, and loops

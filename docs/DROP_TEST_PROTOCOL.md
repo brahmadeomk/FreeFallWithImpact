@@ -122,6 +122,7 @@ engages if register 63 is 1. **Advisory** opens health only.
 | 3 | `0x08` | 8 | CONFIG | advisory | EEPROM was defaulted. Check registers 22, 50, 52 |
 | 4 | `0x10` | 16 | BOOTCHECK | **detection lost** | Boot plausibility check failed |
 | 5 | `0x20` | 32 | WDT_RESET | advisory | Watchdog fired at some point. Sticky until cleared |
+| 6 | `0x40` | 64 | SUPPLY | advisory | Controller rail below the register 71 limit for ~3 s. Opens health, never arrests |
 
 Detection-lost mask = `0x17` (bits 0, 1, 2, 4). If `reg61 & 0x17` is
 non-zero, `CLEAR_LOS` will be **refused** until the fault clears.

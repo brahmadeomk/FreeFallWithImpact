@@ -453,6 +453,7 @@
 #define FAULT_CONFIG      0x0008   /* EEPROM defaulted               */
 #define FAULT_BOOTCHECK   0x0010   /* boot check failed              */
 #define FAULT_WDT_RESET   0x0020   /* sticky: watchdog fired         */
+#define FAULT_SUPPLY      0x0040   /* controller rail below reg 71   */
 
 /* NOT every fault costs us the protective function, and treating them
    alike is wrong in both directions.
@@ -469,7 +470,15 @@
    reason than never having been configured. A past watchdog reset is
    likewise serious enough that an operator must see it, but the
    device is demonstrably running now. Both open the HEALTH output and
-   neither touches the arrest.                                      */
+   neither touches the arrest.
+
+   FAULT_SUPPLY is advisory for the same reason and one more: the rail
+   being low does not mean detection has failed. The part is either
+   running correctly or it is not, and if it is not, the rate, stuck and
+   plausibility checks catch that on their own evidence rather than by
+   inference from a voltage. Engaging a brake because a number crossed a
+   configurable threshold -- one measured by an untrimmed bandgap, at
+   that -- would be acting on the weakest signal in the device.      */
 #define FAULT_DETECTION_LOST (FAULT_RATE | FAULT_STUCK | \
                               FAULT_IMPLAUSIBLE | FAULT_BOOTCHECK)
 
@@ -559,6 +568,25 @@
 #define VCC_UPDATE_MS     1000UL
 #define VCC_INVALID       0xFFFFU
 
+/* Low-supply advisory. Default 4500 mV because the ATmega328P at 16 MHz
+   is out of spec below 4.5 V -- that is the line with a technical
+   meaning, rather than a round number.
+
+   SETTABLE, and 0 disables it, because the bandgap this is measured
+   with is untrimmed: a unit whose reference reads several percent low
+   would otherwise alarm for ever on a perfectly good rail. Commission
+   it by reading register 69 on the actual unit and setting a threshold
+   below what that unit reports healthy. */
+#define DEFAULT_SUPPLY_MIN_MV  4500U
+#define SUPPLY_MIN_FLOOR_MV    3000U
+#define SUPPLY_MIN_CEIL_MV     5500U
+
+/* Consecutive low readings before the flag is raised. Sampling is 1 Hz,
+   so this is ~3 s of genuinely low rail. A single ADC reading must not
+   open the health output: on an installation whose PLC treats
+   health-open as a stop, one glitch would stop the machine. */
+#define SUPPLY_LOW_CONFIRM     3U
+
 
 /* ------------------------- IDENTIFICATION --------------------------
    FW_VERSION      what code is running.  Packed major<<8 | minor.
@@ -587,7 +615,7 @@
 #define FW_VERSION_MAJOR      2
 #define FW_VERSION_MINOR      0          /* CTX311 revision A */
 #define FW_VERSION_PACKED     (((FW_VERSION_MAJOR) << 8) | (FW_VERSION_MINOR))
-#define REGISTER_MAP_VERSION  11
+#define REGISTER_MAP_VERSION  12
 
 #define BUILD_YEAR  ((__DATE__[7]-'0')*1000 + (__DATE__[8]-'0')*100 + \
                      (__DATE__[9]-'0')*10   + (__DATE__[10]-'0'))
@@ -722,6 +750,9 @@ enum
                               measured yet                            */
   VccMinReg,           /* 70 lowest supply seen since boot or
                               CLEAR_DIAG, mV. The sag catcher.        */
+  SupplyMinReg,        /* 71 R/W SETTING low-supply advisory limit,
+                              mV, 3000..5500, 0 = disabled. Def 4500  */
+  SupplyMinEffReg,     /* 72 echo of 71                              */
   HOLDING_REGS_SIZE
 };
 
@@ -843,6 +874,7 @@ struct Config {
   int16_t  tiltRefX;
   int16_t  tiltRefY;
   int16_t  tiltRefZ;
+  uint16_t supplyMinMv;      /* 0 = low-supply advisory disabled */
 };
 
 Config   cfg;
@@ -866,6 +898,8 @@ static uint16_t      vccMinMv   = VCC_INVALID;
 static uint8_t       vccDiscard = VCC_DISCARD;
 static uint8_t       vccStarted = 0;
 static unsigned long vccLastMs  = 0;
+static uint16_t      supplyMinMv = DEFAULT_SUPPLY_MIN_MV;
+static uint8_t       supplyLowCount = 0;
 
 /* Defined further down, next to the tilt maths, but called from the
    command handler above it. The .ino is compiled directly by the host
@@ -1004,6 +1038,8 @@ void writeConfig()
   EEPROM.update(EEPROM_ADDR + 22, highByte((uint16_t)cfg.tiltRefY));
   EEPROM.update(EEPROM_ADDR + 23, lowByte((uint16_t)cfg.tiltRefZ));
   EEPROM.update(EEPROM_ADDR + 24, highByte((uint16_t)cfg.tiltRefZ));
+  EEPROM.update(EEPROM_ADDR + 25, lowByte(cfg.supplyMinMv));
+  EEPROM.update(EEPROM_ADDR + 26, highByte(cfg.supplyMinMv));
 }
 
 void applyDefaults()
@@ -1019,6 +1055,7 @@ void applyDefaults()
      what the product is, so a factory reset must forget it rather than
      carry a stale one into a different mounting. */
   cfg.tiltRefX = cfg.tiltRefY = cfg.tiltRefZ = 0;
+  cfg.supplyMinMv = DEFAULT_SUPPLY_MIN_MV;
   writeConfig();
   currentSlaveId = cfg.slaveId;
   thresholdMg    = cfg.thresholdMg;
@@ -1029,6 +1066,7 @@ void applyDefaults()
   tiltRefX = cfg.tiltRefX;
   tiltRefY = cfg.tiltRefY;
   tiltRefZ = cfg.tiltRefZ;
+  supplyMinMv = cfg.supplyMinMv;
   recomputeThresholdCounts();
   recomputeLosParams();
 }
@@ -1056,6 +1094,8 @@ void loadConfig()
                  ((uint16_t)EEPROM.read(EEPROM_ADDR + 22) << 8));
   cfg.tiltRefZ = (int16_t)((uint16_t)EEPROM.read(EEPROM_ADDR + 23) |
                  ((uint16_t)EEPROM.read(EEPROM_ADDR + 24) << 8));
+  cfg.supplyMinMv = (uint16_t)EEPROM.read(EEPROM_ADDR + 25) |
+                    ((uint16_t)EEPROM.read(EEPROM_ADDR + 26) << 8);
 
   bool bad = (cfg.magic != CONFIG_MAGIC) ||
              (cfg.slaveId < 1) || (cfg.slaveId > 247) ||
@@ -1066,7 +1106,10 @@ void loadConfig()
              (cfg.losTimeMs < LOS_TIME_MIN_MS) ||
              (cfg.losTimeMs > LOS_TIME_MAX_MS) ||
              (cfg.losHoldMs > LOS_HOLD_MAX_MS) ||
-             (cfg.losFaultAction > 1);
+             (cfg.losFaultAction > 1) ||
+             (cfg.supplyMinMv != 0 &&
+              (cfg.supplyMinMv < SUPPLY_MIN_FLOOR_MV ||
+               cfg.supplyMinMv > SUPPLY_MIN_CEIL_MV));
 
   if (bad) {
     cfgWasDefaulted = true;
@@ -1081,6 +1124,7 @@ void loadConfig()
     tiltRefX = cfg.tiltRefX;
     tiltRefY = cfg.tiltRefY;
     tiltRefZ = cfg.tiltRefZ;
+    supplyMinMv = cfg.supplyMinMv;
     recomputeThresholdCounts();
     recomputeLosParams();
   }
@@ -1163,6 +1207,22 @@ void checkLosSettingsUpdate()
     writeConfig();
   }
 
+  /* Reg 71 -- low-supply advisory limit. 0 disables it; otherwise it
+     must be a sane rail voltage. Out of range reverts to the value in
+     force, like every other setting here. */
+  req = holdingRegs[SupplyMinReg];
+  if (req != supplyMinMv) {
+    if (req == 0 ||
+        (req >= SUPPLY_MIN_FLOOR_MV && req <= SUPPLY_MIN_CEIL_MV)) {
+      supplyMinMv     = (uint16_t)req;
+      cfg.supplyMinMv = supplyMinMv;
+      supplyLowCount  = 0;          /* new limit, fresh debounce */
+      writeConfig();
+    } else {
+      holdingRegs[SupplyMinReg] = supplyMinMv;   /* reject */
+    }
+  }
+
   req = holdingRegs[LosFaultActionReg];
   if (req != losFaultAction) {
     if (req <= 1) {
@@ -1201,6 +1261,7 @@ void checkCommandRegister()
       holdingRegs[LosTimeMsReg]       = losTimeMs;
       holdingRegs[LosHoldMsReg]       = (unsigned int)losHoldMs;
       holdingRegs[LosFaultActionReg]  = losFaultAction;
+      holdingRegs[SupplyMinReg]       = supplyMinMv;
       /* identification registers are compile-time constants and are
          deliberately NOT cleared by a factory reset */
       break;
@@ -1585,6 +1646,26 @@ static void runDiagnostics(uint16_t measuredRate)
 
   /* ---- 4. config ---- */
   if (cfgWasDefaulted) faultFlags |= FAULT_CONFIG;
+
+  /* ---- 5. controller supply (ADVISORY) ----
+     Debounced over SUPPLY_LOW_CONFIRM readings. This opens the HEALTH
+     output, and on an installation whose PLC treats health-open as a
+     stop, raising it on one bad ADC reading would stop the machine for
+     a glitch. Three consecutive seconds of low rail is a supply
+     problem; one sample is noise.
+
+     Never touches the arrest -- FAULT_SUPPLY is deliberately outside
+     FAULT_DETECTION_LOST. */
+  if (supplyMinMv != 0 && vccMv != VCC_INVALID) {
+    if (vccMv < supplyMinMv) {
+      if (supplyLowCount < SUPPLY_LOW_CONFIRM) supplyLowCount++;
+      if (supplyLowCount >= SUPPLY_LOW_CONFIRM) faultFlags |= FAULT_SUPPLY;
+    } else {
+      supplyLowCount = 0;
+    }
+  } else {
+    supplyLowCount = 0;
+  }
 
   /* ---- act on it ----
      Health opens on any fault. If configured to fail safe (default),
@@ -2255,8 +2336,9 @@ static void publishBlock()
     holdingRegs[TiltRefZReg] = (unsigned int)(uint16_t)countsToMgSigned(tiltRefZ);
   }
 
-  holdingRegs[VccReg]    = vccMv;
-  holdingRegs[VccMinReg] = vccMinMv;
+  holdingRegs[VccReg]        = vccMv;
+  holdingRegs[VccMinReg]     = vccMinMv;
+  holdingRegs[SupplyMinEffReg] = supplyMinMv;
 }
 
 /* 1-second RMS. Runs in loop context: the three 64-bit divisions cost
@@ -2355,6 +2437,8 @@ void setup()
   holdingRegs[TiltStatusReg]      = 0;
   holdingRegs[VccReg]             = VCC_INVALID;
   holdingRegs[VccMinReg]          = VCC_INVALID;
+  holdingRegs[SupplyMinReg]       = supplyMinMv;
+  holdingRegs[SupplyMinEffReg]    = supplyMinMv;
   holdingRegs[CommandReg]         = 0;
   holdingRegs[LastCommandReg]     = 0;
   holdingRegs[CommandStatusReg]   = CMD_STATUS_IDLE;
