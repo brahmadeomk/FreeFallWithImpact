@@ -160,7 +160,7 @@ More than one can be set.
 |---|---|---:|---|
 | 0 | `0x01` | 1 | PORF — power-on reset. Normal for a cold start |
 | 1 | `0x02` | 2 | EXTRF — external reset pin |
-| 2 | `0x04` | 4 | BORF — **brown-out**. Investigate the supply |
+| 2 | `0x04` | 4 | BORF — **brown-out**, the rail collapsed. Only works if the BOD fuse is set; see the register map. Cross-check register 70 |
 | 3 | `0x08` | 8 | WDRF — **watchdog fired**. Sets `FAULT_WDT_RESET` in register 61 |
 
 ### Enumerated registers (a single code, not bits)
@@ -200,6 +200,7 @@ Always reads back 0. Confirm through registers 45–47, never by reading 28.
 |---|---|---|
 | 57 height | `0xFFFF` (65535) | **Not valid** — never reached free-fall depth. Not a 655 m fall |
 | 64 tilt | `0xFFFF` (65535) | **Not valid** — no reference set, or never yet at rest. Not 6553.5° |
+| 69 / 70 supply | `0xFFFF` (65535) | **Not measured yet** — not 65.5 V |
 | 59 output hold | `0` | Latch until commanded (the default) — not "no hold" |
 | 48 reserved | non-zero | You are running a `-DCTX311_STACK_DEBUG` image. Reflash a release build |
 

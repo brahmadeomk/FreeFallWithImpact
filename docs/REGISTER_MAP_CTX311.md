@@ -1,10 +1,11 @@
-# CTX311 register map — map version 10 (firmware rev A)
+# CTX311 register map — map version 11 (firmware rev A)
 
 Modbus RTU slave, 9600 8N1, default slave ID 71. All registers are
 holding registers (function 3 to read, 6 or 16 to write).
 
-**Read register 43 on connect.** It carries the map version, now **10**
-(9 added the loss-of-support block; 10 adds tilt in registers 64–68). A
+**Read register 43 on connect.** It carries the map version, now **11**
+(9 added the loss-of-support block, 10 tilt in 64–68, 11 supply
+monitoring in 69–70). A
 CTX310 master expecting version 8 must refuse to ingest — and CTX311 changes
 more than the map, so this check matters more than it did before.
 
@@ -81,7 +82,7 @@ commissioning question about whether a reset can occur under load.
 |---|---|
 | Impact threshold floor raised 10 → **1200 mg** | An existing config below 1200 mg is rejected into defaults on first boot. Check register 22 after upgrading |
 | Status register 25 **bit 2 removed** | Dashboards keying on it must be updated. It re-latched within seconds of any clear, so it was a permanent fault light for normal polling. Register 26 remains the counter |
-| Registers 49–68 added | Response is now 143 bytes for a full sweep; library `BUFFER_SIZE` raised 128 → 160 |
+| Registers 49–70 added | Response is now 147 bytes for a full sweep; library `BUFFER_SIZE` raised 128 → 160 |
 | Watchdog **enabled** | A hung device now resets instead of holding the output wherever it was. Register 29 will show WDRF and register 61 will latch `FAULT_WDT_RESET` |
 | EEPROM offsets 0–6 unchanged | Slave ID and impact threshold survive the upgrade, as they did across G→H |
 
@@ -121,7 +122,7 @@ only — see `docs/RESOURCE_BUDGET.md`. If a device in the field reads
 non-zero at register 48, it is running a debug build and should be
 reflashed with a release image.
 
-## New registers (49–68)
+## New registers (49–70)
 
 | Reg | Name | Access | Units / notes |
 |---|---|---|---|
@@ -145,6 +146,8 @@ reflashed with a release image.
 | 66 | Tilt reference X | R | mg, **SIGNED** |
 | 67 | Tilt reference Y | R | mg, **SIGNED** |
 | 68 | Tilt reference Z | R | mg, **SIGNED** |
+| 69 | **Supply now** | R | mV. `0xFFFF` = not measured yet |
+| 70 | **Supply minimum** | R | mV, lowest since boot or `CLEAR_DIAG`. The sag catcher |
 
 ### Register 56 is the one to trend
 
@@ -182,6 +185,8 @@ angle against a stored reference.
 | 66 | Tilt reference X | R | mg, **SIGNED** |
 | 67 | Tilt reference Y | R | mg, **SIGNED** |
 | 68 | Tilt reference Z | R | mg, **SIGNED** |
+| 69 | **Supply now** | R | mV. `0xFFFF` = not measured yet |
+| 70 | **Supply minimum** | R | mV, lowest since boot or `CLEAR_DIAG`. The sag catcher |
 
 ### Setting the reference
 
@@ -238,6 +243,84 @@ of a degree.
 
 **No yaw, ever.** Rotation about the gravity vector does not move the
 gravity vector. Two axes of freedom, never three.
+
+## Supply monitoring (registers 69–70, and register 29)
+
+For logging and troubleshooting. **Nothing here operates an output or
+raises a fault** — see "why there is no supply fault" below.
+
+There are **two** supply diagnostics and they catch different failures.
+Neither alone is enough.
+
+| | Register 69 / 70 (ADC) | Register 29 bit 2, BORF (brown-out) |
+|---|---|---|
+| What | Actual rail voltage in mV | A reset happened because the rail collapsed |
+| Catches | **Slow sag** — a rail drooping under load | **Fast collapse** — milliseconds |
+| Misses | Anything shorter than the 1 Hz sampling | Anything that does not cross the BOD threshold |
+| When | Live, continuously | Post-mortem, and only after a reset |
+| Depends on | Nothing | The **BOD fuse** being set |
+
+### Registers 69 and 70 — measured, no extra hardware
+
+The ATmega328P reads its own supply by measuring the internal 1.1 V
+bandgap against AVcc: `Vcc = 1.1 × 1024 / reading`. No pin, no external
+components, and the ADC was otherwise unused — the analog pins are driven
+as digital outputs and nothing samples them.
+
+**Register 70 is the one worth trending.** A rail that is fine whenever
+you poll it and dips when the arrest relay pulls in will look perfect in
+register 69 forever. The minimum is what exposes it. `CLEAR_DIAG`
+rebases it, alongside the other diagnostic extremes in registers 20 and
+26.
+
+**Absolute accuracy is poor, and that is inherent.** The bandgap is
+untrimmed and specified 1.0–1.2 V, so the reading can be several percent
+out unit to unit. It is a good *relative* instrument: trend one unit
+against itself over time, and do not compare two units without
+calibrating each. If an absolute number ever matters, calibrate per unit
+and store the correction on the master.
+
+**It cannot see a fast sag.** Sampling is 1 Hz, so a droop lasting
+milliseconds is invisible. That is exactly the case brown-out detection
+covers in hardware.
+
+### Register 29 bit 2 — brown-out, and its catch
+
+`BORF` means the controller reset because the rail fell below the
+brown-out threshold. It is a genuine supply event and it is free.
+
+**But it depends on a fuse, not on firmware.** `BODLEVEL` lives in the
+extended fuse byte. If brown-out detection is disabled, BORF never sets
+and this diagnostic is *silently dead* — it looks the same as a healthy
+supply. Arduino boards are commonly fused at **2.7 V**, which on a 5 V
+rail is near-total collapse: a rail sagging to 4.2 V, which is a real
+fault worth finding, would never trip it.
+
+Check the fuse at the bench before relying on it:
+
+```sh
+avrdude -p m328p -c <programmer> -U efuse:r:-:h
+```
+
+`0xFD` = BODLEVEL 2.7 V, `0xFC` = 4.3 V, `0xFF` = **disabled**.
+
+Register 29 is captured once at boot and never changes during a run — it
+describes the reset that started *this* run. `MCUSR` is cleared
+immediately after it is read, so the bits do not accumulate across
+resets and each run reports only its own cause.
+
+### Why there is no supply fault
+
+Deliberate. A threshold in firmware would open the health output, which a
+PLC may treat as a stop condition, and the right limit depends on the
+installation's regulator, cable run and load — none of which the device
+knows.
+
+This follows the same reasoning that removed the sustained-RMS trip in
+rev H: measure in the device, **alarm on the master**, where the limit
+and its hysteresis are visible and adjustable rather than buried in
+firmware. Register 69 and 70 give the PLC everything it needs to make
+that call.
 
 ## Fault flags (register 61)
 

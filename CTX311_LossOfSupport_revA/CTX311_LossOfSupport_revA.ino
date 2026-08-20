@@ -541,6 +541,24 @@
 #define TILT_ST_AT_REST   0x02
 #define TILT_ST_VALID     0x04
 
+/* ---- supply monitoring (registers 69, 70) --------------------------
+   The ATmega328P can measure its own Vcc with no external parts: read
+   the internal 1.1 V bandgap with the ADC referenced to AVcc, and
+   Vcc = 1.1 * 1024 / reading. The ADC is otherwise unused here -- the
+   analog pins are driven as digital outputs and nothing samples them --
+   so this costs no hardware and steals nothing.
+
+   1.1 * 1024 * 1000, so the division yields millivolts directly. */
+#define VCC_SCALE_MV      1126400UL
+
+/* The bandgap needs time to settle after the ADC is first enabled, and
+   the datasheet says to discard the first conversion after a reference
+   change. Nothing here ever changes the reference again, so discarding
+   a few at boot is enough. */
+#define VCC_DISCARD       4
+#define VCC_UPDATE_MS     1000UL
+#define VCC_INVALID       0xFFFFU
+
 
 /* ------------------------- IDENTIFICATION --------------------------
    FW_VERSION      what code is running.  Packed major<<8 | minor.
@@ -569,7 +587,7 @@
 #define FW_VERSION_MAJOR      2
 #define FW_VERSION_MINOR      0          /* CTX311 revision A */
 #define FW_VERSION_PACKED     (((FW_VERSION_MAJOR) << 8) | (FW_VERSION_MINOR))
-#define REGISTER_MAP_VERSION  10
+#define REGISTER_MAP_VERSION  11
 
 #define BUILD_YEAR  ((__DATE__[7]-'0')*1000 + (__DATE__[8]-'0')*100 + \
                      (__DATE__[9]-'0')*10   + (__DATE__[10]-'0'))
@@ -699,6 +717,11 @@ enum
   TiltRefXReg,         /* 66 reference gravity X, mg *** SIGNED ***   */
   TiltRefYReg,         /* 67 reference gravity Y, mg *** SIGNED ***   */
   TiltRefZReg,         /* 68 reference gravity Z, mg *** SIGNED ***   */
+  /* ---- supply, map version 11. Logging and troubleshooting only --- */
+  VccReg,              /* 69 controller supply now, mV, 0xFFFF = not
+                              measured yet                            */
+  VccMinReg,           /* 70 lowest supply seen since boot or
+                              CLEAR_DIAG, mV. The sag catcher.        */
   HOLDING_REGS_SIZE
 };
 
@@ -836,6 +859,13 @@ static uint16_t      tiltAngle = TILT_INVALID;
 static uint8_t       tiltAtRest = 0;
 static unsigned long tiltStillSinceMs = 0;
 static unsigned long tiltLastUpdateMs = 0;
+
+/* Supply. Loop context only. */
+static uint16_t      vccMv      = VCC_INVALID;
+static uint16_t      vccMinMv   = VCC_INVALID;
+static uint8_t       vccDiscard = VCC_DISCARD;
+static uint8_t       vccStarted = 0;
+static unsigned long vccLastMs  = 0;
 
 /* Defined further down, next to the tilt maths, but called from the
    command handler above it. The .ino is compiled directly by the host
@@ -1230,6 +1260,10 @@ void checkCommandRegister()
       break;
 
     case CMD_CLEAR_DIAG:
+      /* The supply minimum is a diagnostic high-water like reg 20 and
+         reg 26, so it belongs to the same clear rather than needing a
+         command of its own. */
+      vccMinMv = vccMv;
       ATOMIC_BLOCK(ATOMIC_RESTORESTATE) {
         isrMaxTicks = 0;
         blockMissed  = 0;
@@ -1965,6 +1999,66 @@ static bool setTiltReference()
   return true;
 }
 
+/* Supply measurement. NON-BLOCKING by construction: invariant 8 forbids
+   blocking delays, and a 13-cycle conversion at 125 kHz is ~104 us that
+   there is no reason to sit and wait for.
+
+   The ADC is set up once and left alone. ADMUX never changes after that,
+   so there is no reference-settling penalty on any conversion but the
+   first few, and those are discarded. Each pass either starts a
+   conversion or collects one; it never waits for one.
+
+   WHAT THIS IS AND IS NOT. It is a real measurement of the rail the
+   controller is running on, which is what you want for logging and for
+   finding a supply that sags under load. It is NOT accurate in absolute
+   terms: the bandgap is untrimmed and spec'd 1.0-1.2 V, so the reading
+   can be out by several percent unit to unit. Trend it, compare a unit
+   against itself, and calibrate per unit if an absolute number ever
+   matters. See docs/REGISTER_MAP_CTX311.md.
+
+   It also cannot see a FAST sag. At 1 Hz a droop lasting milliseconds --
+   a relay pulling in, an inrush -- is invisible. That is what the
+   brown-out detector in register 29 catches, in hardware, and the two
+   are complementary rather than redundant. */
+static void updateVcc()
+{
+  if (!vccStarted) {
+    /* AVcc as reference, channel 14 = the 1.1 V bandgap. No pin is
+       involved, so nothing else on the board is disturbed. */
+    ADMUX  = (1 << REFS0) | 0x0E;
+    ADCSRA = (1 << ADEN) | (1 << ADPS2) | (1 << ADPS1) | (1 << ADPS0);
+    ADCSRA |= (1 << ADSC);
+    vccStarted = 1;
+    return;
+  }
+
+  if (ADCSRA & (1 << ADSC)) return;      /* still converting */
+
+  uint16_t raw = ADC;
+
+  if (vccDiscard) {                      /* bandgap still settling */
+    vccDiscard--;
+    ADCSRA |= (1 << ADSC);
+    return;
+  }
+
+  if (raw != 0) {
+    uint32_t mv = VCC_SCALE_MV / raw;
+    vccMv = (mv > 65534UL) ? 65534U : (uint16_t)mv;
+    /* The minimum is the point of this. A supply that is fine when you
+       poll it and dips under load looks healthy in reg 69 and shows up
+       here. */
+    if (vccMinMv == VCC_INVALID || vccMv < vccMinMv) vccMinMv = vccMv;
+  }
+
+  /* Pace the next one. Between ticks the ADC simply sits idle. */
+  unsigned long now = millis();
+  if (now - vccLastMs >= VCC_UPDATE_MS) {
+    vccLastMs = now;
+    ADCSRA |= (1 << ADSC);
+  }
+}
+
 /* ==================================================================== */
 /*  register publication                                                */
 /* ==================================================================== */
@@ -2160,6 +2254,9 @@ static void publishBlock()
     holdingRegs[TiltRefYReg] = (unsigned int)(uint16_t)countsToMgSigned(tiltRefY);
     holdingRegs[TiltRefZReg] = (unsigned int)(uint16_t)countsToMgSigned(tiltRefZ);
   }
+
+  holdingRegs[VccReg]    = vccMv;
+  holdingRegs[VccMinReg] = vccMinMv;
 }
 
 /* 1-second RMS. Runs in loop context: the three 64-bit divisions cost
@@ -2256,6 +2353,8 @@ void setup()
   holdingRegs[Rsvd48Reg]          = 0;
   holdingRegs[TiltAngleReg]       = TILT_INVALID;
   holdingRegs[TiltStatusReg]      = 0;
+  holdingRegs[VccReg]             = VCC_INVALID;
+  holdingRegs[VccMinReg]          = VCC_INVALID;
   holdingRegs[CommandReg]         = 0;
   holdingRegs[LastCommandReg]     = 0;
   holdingRegs[CommandStatusReg]   = CMD_STATUS_IDLE;
@@ -2340,6 +2439,7 @@ void loop()
 
   update1sRms();
   updateTilt();
+  updateVcc();
 
   uint8_t ready;
   ATOMIC_BLOCK(ATOMIC_RESTORESTATE) { ready = blockReady; }

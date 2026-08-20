@@ -17,6 +17,16 @@ extern uint16_t TCNT1, TCCR1A, TCCR1B, TIMSK1;
 #define PC1 1
 #define PC2 2
 
+/* ---- ADC, used only for the internal-bandgap Vcc measurement ---- */
+extern uint8_t  ADMUX, ADCSRA;
+extern uint16_t ADC;
+#define REFS0 6
+#define ADEN  7
+#define ADSC  6
+#define ADPS2 2
+#define ADPS1 1
+#define ADPS0 0
+
 /* Timer1 prescaler bits */
 #define CS10 0
 #define CS11 1

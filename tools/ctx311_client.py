@@ -36,8 +36,8 @@ import math
 import sys
 import time
 
-EXPECTED_MAP_VERSION = 10
-REGISTER_COUNT = 69
+EXPECTED_MAP_VERSION = 11
+REGISTER_COUNT = 71
 
 # register indices used by name
 SLAVE_ID = 21
@@ -73,6 +73,10 @@ TILT_REF_Y = 67
 TILT_REF_Z = 68
 
 TILT_INVALID = 0xFFFF
+
+VCC = 69                # controller supply now, mV
+VCC_MIN = 70            # lowest since boot or CLEAR_DIAG, mV
+VCC_INVALID = 0xFFFF
 
 # Register 65 bits.
 TILT_STATUS_BITS = (
@@ -179,6 +183,7 @@ NAMES = {
     64: "tilt angle (0.1 deg, 0xFFFF=invalid)", 65: "tilt status bits",
     66: "tilt ref X (mg, signed)", 67: "tilt ref Y (mg, signed)",
     68: "tilt ref Z (mg, signed)",
+    69: "supply now (mV)", 70: "supply minimum (mV)",
 }
 
 
@@ -480,6 +485,24 @@ def print_summary(regs):
     if ang != TILT_INVALID and not (st & 0x02):
         print("  NOTE: not at rest -- this angle is HELD from the last time")
         print("        it was, not the attitude right now.")
+
+    print()
+    v, vmin = regs[VCC], regs[VCC_MIN]
+    if v == VCC_INVALID:
+        print("supply (reg 69): not measured yet")
+    else:
+        print("supply (reg 69): %d mV now, minimum %s since boot/CLEAR_DIAG"
+              % (v, "%d mV" % vmin if vmin != VCC_INVALID else "n/a"))
+        if vmin != VCC_INVALID and vmin < v - 200:
+            print("  !! it has sagged %d mV below where it sits now. A rail"
+                  % (v - vmin))
+            print("     that dips under load reads fine when you poll it.")
+        print("  Absolute value is only good to a few percent -- the bandgap")
+        print("  is untrimmed. Trend it, and compare a unit against itself.")
+        rc = regs[29]
+        if rc & 0x04:
+            print("  !! register 29 bit 2 (BORF): this unit BROWN-OUT RESET.")
+            print("     Hardware caught a collapse the 1 Hz sampling cannot.")
 
     print()
     print("live raw magnitude (reg 60): %d mg" % regs[RAW_MAG])

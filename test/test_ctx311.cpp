@@ -33,6 +33,8 @@
 
 uint8_t  DDRC = 0, PORTC = 0, MCUSR = 0;
 uint16_t TCNT1 = 0, TCCR1A = 0, TCCR1B = 0, TIMSK1 = 0;
+uint8_t  ADMUX = 0, ADCSRA = 0;
+uint16_t ADC = 0;
 unsigned long g_millis = 0, g_micros = 0;
 HardwareSerial Serial;
 EEPROMClass    EEPROM;
@@ -272,7 +274,7 @@ static void test_identification_registers()
   /* 9 -> 10: registers 64-68 added for tilt. Appending cannot make a
      map-9 master misread what it already reads, but the map changed and
      a master must acknowledge it, so the version moves. */
-  CHECK_EQ(holdingRegs[MapVersionReg], 10, "reg 43 map version");
+  CHECK_EQ(holdingRegs[MapVersionReg], 11, "reg 43 map version");
   CHECK_EQ(holdingRegs[FwVersionReg], (2 << 8) | 0, "reg 42 firmware version");
   CHECK(holdingRegs[BuildDateReg] != 0, "reg 44 build date is populated");
 
@@ -1070,6 +1072,113 @@ static void test_tilt_publishes_and_never_trips()
            "cleared reference -> invalid, not a stale angle");
 }
 
+/* ===================================================================== */
+/*  supply monitoring -- registers 69, 70                                */
+/* ===================================================================== */
+
+/* Drive the fake ADC: present a raw bandgap reading and let updateVcc()
+   collect it. ADSC is cleared to mean "conversion finished". */
+static void feedVcc(uint16_t raw, int passes)
+{
+  for (int i = 0; i < passes; i++) {
+    ADC = raw;
+    ADCSRA &= ~(1 << ADSC);          /* conversion complete */
+    g_millis += VCC_UPDATE_MS + 1;   /* let the pacing tick expire */
+    updateVcc();
+  }
+}
+
+static void vccFresh()
+{
+  vccMv = VCC_INVALID; vccMinMv = VCC_INVALID;
+  vccDiscard = VCC_DISCARD; vccStarted = 0; vccLastMs = 0;
+  ADCSRA = 0; ADMUX = 0; ADC = 0;
+}
+
+static void test_vcc_is_measured_and_scaled()
+{
+  printf("supply: bandgap converted to millivolts\n");
+  vccFresh();
+
+  /* 1.1 V bandgap against a 5.00 V rail reads 1.1/5.0 * 1024 = 225. */
+  feedVcc(225, VCC_DISCARD + 2);
+  CHECK(vccMv >= 4900 && vccMv <= 5100,
+        "225 counts reads ~5000 mV: got %u", vccMv);
+
+  /* A sagging rail reads HIGHER counts -- the bandgap is fixed and the
+     reference is the rail, so the ratio moves the other way. This is
+     the sign error worth having a test for. */
+  vccFresh();
+  feedVcc(250, VCC_DISCARD + 2);
+  CHECK(vccMv >= 4400 && vccMv <= 4600,
+        "250 counts reads ~4500 mV, i.e. LOWER: got %u", vccMv);
+}
+
+static void test_vcc_discards_the_settling_conversions()
+{
+  printf("supply: the first conversions are discarded, not published\n");
+  vccFresh();
+
+  updateVcc();                       /* first pass only sets the ADC up */
+  CHECK(vccStarted, "ADC configured on the first pass");
+  CHECK_EQ(vccMv, VCC_INVALID, "nothing published yet");
+  CHECK(ADMUX & (1 << REFS0), "AVcc selected as reference");
+  CHECK_EQ(ADMUX & 0x0F, 0x0E, "channel 14 = internal bandgap");
+
+  /* Garbage during settling must never reach the registers. */
+  feedVcc(1023, VCC_DISCARD - 1);
+  CHECK_EQ(vccMv, VCC_INVALID, "settling conversions are discarded");
+
+  feedVcc(225, 2);
+  CHECK(vccMv >= 4900 && vccMv <= 5100, "publishes once settled");
+}
+
+static void test_vcc_minimum_catches_a_sag()
+{
+  printf("supply: reg 70 holds the lowest seen, and CLEAR_DIAG resets it\n");
+  armed();
+  vccFresh();
+
+  feedVcc(225, VCC_DISCARD + 2);     /* ~5.00 V */
+  uint16_t nominal = vccMv;
+
+  feedVcc(250, 2);                   /* dip to ~4.50 V */
+  uint16_t dipped = vccMv;
+  feedVcc(225, 2);                   /* recovers */
+
+  CHECK(vccMv > dipped, "reg 69 follows the recovery");
+  CHECK_EQ(vccMinMv, dipped, "reg 70 REMEMBERS the dip");
+  CHECK(vccMinMv < nominal, "the minimum is below nominal");
+
+  publishBlock();
+  CHECK_EQ(holdingRegs[VccReg], vccMv, "reg 69 published");
+  CHECK_EQ(holdingRegs[VccMinReg], vccMinMv, "reg 70 published");
+
+  /* CLEAR_DIAG owns the diagnostic extremes, so it owns this one. */
+  holdingRegs[CommandReg] = CMD_CLEAR_DIAG;
+  checkCommandRegister();
+  CHECK_EQ(vccMinMv, vccMv, "CLEAR_DIAG rebases the minimum to now");
+}
+
+static void test_vcc_never_trips_anything()
+{
+  printf("supply: monitoring only -- operates nothing, faults nothing\n");
+  armed();
+  faultFlags = 0; cfgWasDefaulted = false;
+  vccFresh();
+
+  /* A rail collapsing to ~3 V must be visible and must change nothing
+     else. Thresholding this belongs in the PLC, where the limit and its
+     hysteresis are adjustable, not buried in firmware. */
+  feedVcc(375, VCC_DISCARD + 2);
+  CHECK(vccMv >= 2900 && vccMv <= 3100, "reads ~3000 mV: got %u", vccMv);
+
+  CHECK(PORTC & (1 << LOS_PORT_BIT),    "arrest untouched by a low rail");
+  CHECK(PORTC & (1 << OUTPUT_PORT_BIT), "impact untouched by a low rail");
+  CHECK(!losLatched, "no latch");
+  CHECK_EQ(faultFlags, 0, "no fault raised -- the master decides the limit");
+}
+
 static void test_status_bit2_removed()
 {
   printf("CTX311: status bit 2 removed -- it was a permanent fault light\n");
@@ -1123,6 +1232,10 @@ int main()
   test_tilt_updates_only_at_rest();
   test_tilt_reference_refused_while_moving();
   test_tilt_publishes_and_never_trips();
+  test_vcc_is_measured_and_scaled();
+  test_vcc_discards_the_settling_conversions();
+  test_vcc_minimum_catches_a_sag();
+  test_vcc_never_trips_anything();
   test_status_bit2_removed();
 
   printf("\n%d checks, %d failures\n", checks, failures);
