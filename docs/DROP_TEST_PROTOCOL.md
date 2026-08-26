@@ -1,9 +1,11 @@
 # Drop test protocol — CTX311 rev A
 
-**Template. No results have been recorded. Every table below is blank on
-purpose** — filling one in is T-10's job, done at the rig with a real
-unit. Do not populate these from simulation, from the host tests, or from
-expectation.
+**Mostly a template.** The tables are blank on purpose — filling them in
+is T-10's job, done at the rig with a real unit. Do not populate them
+from simulation, from the host tests, or from expectation.
+
+**One field result IS recorded**, from the first installation — see
+"Field result 1" below. It settled one question and left two open.
 
 This mirrors `HARDWARE_VALIDATION.md`: measurements taken from a real
 unit over Modbus, one row per drop. A claim is a hypothesis until a unit
@@ -78,6 +80,86 @@ and fix that first — the drop told you nothing.
 moves when you move the sensor, and check that the drop actually lasted
 25 ms — at 1 g that is only ~3 cm of travel, but a hand movement that
 decelerates early may never hold below threshold for long enough.
+
+## Field result 1 — first installation, confirm time raised to 50 ms
+
+Recorded because it is real evidence from a real machine, which is worth
+more than anything in this repository's host tests.
+
+### What was done
+
+| | |
+|---|---|
+| Setting | Register 50 = **500 mg**, register 52 = **25 ms** |
+| Observed | Arrest output triggered during **normal operation** |
+| Suspected cause | Motor acceleration at start of descent |
+| Machine | Maximum vertical speed ~**1 m/s** |
+| Change | Register 52 raised to **50 ms** |
+| Observed after | **No trigger during normal operation** |
+| Confirmation | Sensor hand-held, released from **1 m**; arrest output triggered correctly at 500 mg / 50 ms |
+
+### What it establishes
+
+**The false trip was a transient, not the acceleration ramp.** At a
+500 mg threshold the assembly must be accelerating downward at more than
+0.5 g for the detector to see anything at all. A *sustained* 0.5 g would
+take ~204 ms to reach 1 m/s and would therefore have tripped 50 ms just
+as easily as 25 ms. Since 50 ms does **not** trip, the sustained
+acceleration is below 0.5 g and the 25 ms trips were caused by something
+lasting between 25 and 50 ms — a start-up jerk or backlash take-up, not
+the steady ramp. Raising the confirm time is the correct lever for that,
+and the fix is sound.
+
+### What it does NOT establish, and both matter
+
+**1. The drop test barely tested the timing.** Free fall from 1 m lasts
+**452 ms** at ~0 mg — about **9×** the 50 ms confirm time. That drop
+would have tripped at any confirm time up to ~450 ms. It confirms the
+detector fires and the output works; it says almost nothing about
+whether 50 ms is the right number rather than 100 ms or 200 ms.
+
+**2. Nothing tested the case the product exists for.** A hand-released
+drop is a *clean free fall* — magnitude goes to ~0 mg, which passes any
+threshold. It cannot tell you anything about a **partial** loss of
+support, which is the realistic failure (see "Why loss of support and
+not free fall" in the register map).
+
+And the threshold is now set where that matters:
+
+| Register 50 | Means | A failure unloading 30 % (~700 mg) |
+|---:|---|---|
+| 850 mg (default) | lost ~15 % of support | **trips** |
+| **500 mg (in use)** | lost ~50 % of support | **does not trip** |
+
+At 500 mg the device will catch a free fall and a severe partial
+failure, and will **miss** a strand slip or shoe release that unloads
+less than about half. That may be an acceptable trade for this
+installation — but it is a trade, it was not measured, and the drop test
+performed cannot detect it.
+
+**To close it**, run the constrained cases in "Drop types that must be
+covered" below: partial unload at ~15 %, at ~30 %, and marginally under
+threshold. Those are the drops that discriminate. If the machine turns
+out to need 500 mg to stay quiet, that is a finding about the machine
+worth writing down, not a setting to adopt silently.
+
+### Arrestor sizing must be recomputed — H-06
+
+The sizing table in the register map assumed the assembly starts from
+rest. This machine runs at **1 m/s**, so a failure during descent starts
+from there:
+
+| | From rest | Descending at 1 m/s |
+|---|---|---|
+| 50 ms confirm | 0.49 m/s, 1.2 cm | **1.49 m/s, 6.2 cm** |
+| + 50 ms arrestor engagement | — | **1.98 m/s, 14.9 cm** |
+
+Energy goes with the square of velocity, so at 50 ms the arrestor sees
+about **9× the energy** the from-rest table implies. The register map has
+been corrected to show both cases. **H-06 should be re-checked against
+14.9 cm and 1.98 m/s**, not against 1.2 cm.
+
+---
 
 ## Register codes — what a raw value means
 

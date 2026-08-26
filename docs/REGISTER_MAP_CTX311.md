@@ -96,7 +96,10 @@ sustained near-zero-g a free-fall detector waits for.
 So register 50 defaults to **850 mg**, not to a free-fall threshold.
 It means "this assembly has lost about 15% of its support".
 
-Register 52 (confirm time) is the number that sizes your arrestor:
+Register 52 (confirm time) is the number that sizes your arrestor.
+
+**These figures assume the assembly starts FROM REST.** That is the
+easy case and it is not the one to size against — see the next table.
 
 | Confirm time | Drop before output | Velocity at arrest |
 |---|---|---|
@@ -105,9 +108,27 @@ Register 52 (confirm time) is the number that sizes your arrestor:
 | 150 ms | 11.0 cm | 1.47 m/s |
 | 300 ms | 44.1 cm | 2.94 m/s |
 
-Arrest energy goes with the **square** of velocity. Doubling the
-confirm time quadruples what the arrestor absorbs. Add the arrest
-device's own engagement time to every figure.
+### If the assembly is already moving — size against this instead
+
+A failure during a descent starts from the descent speed, not from
+zero. The confirm time then adds to a velocity that is already there,
+and because arrest energy goes with the **square** of velocity, the
+difference is much larger than it looks.
+
+At a **1 m/s** descent — a realistic hoist speed, and the one measured
+on the first field installation:
+
+| Confirm time | From rest | Descending at 1 m/s | Energy ratio |
+|---|---|---|---|
+| 25 ms | 0.25 m/s, 0.3 cm | **1.25 m/s, 2.8 cm** | 25× |
+| 50 ms | 0.49 m/s, 1.2 cm | **1.49 m/s, 6.2 cm** | 9.2× |
+
+Then **add the arrest device's own engagement time**, which continues
+accelerating from there. With 50 ms confirm and a 50 ms engagement, from
+a 1 m/s descent: **1.98 m/s and 14.9 cm** before the arrest bites.
+
+That last figure is the one H-06 must size against, not the 1.2 cm in
+the first table.
 
 ## Registers 35 and 48 are reserved holes
 
