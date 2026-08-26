@@ -143,11 +143,66 @@ threshold. Those are the drops that discriminate. If the machine turns
 out to need 500 mg to stay quiet, that is a finding about the machine
 worth writing down, not a setting to adopt silently.
 
+### The ramp is not the problem; the transient on top of it is
+
+The assembly starts from rest and accelerates to 1 m/s, so it is worth
+being precise about what the *steady* ramp looks like to the detector.
+
+Sensed magnitude during a downward acceleration `a` is `(1 − a/g) g`,
+and the ramp lasts far longer than any confirm time — so if the ramp
+crosses the threshold at all, it trips.
+
+| 0 → 1 m/s in | Accel | Magnitude during ramp | 850 mg | 500 mg |
+|---|---|---:|---|---|
+| 0.30 s | 3.33 m/s² | 660 mg | **trips** | ok |
+| 0.50 s | 2.00 m/s² | 796 mg | **trips** | ok |
+| 0.68 s | 1.47 m/s² | 850 mg | borderline | ok |
+| 1.00 s | 1.00 m/s² | 898 mg | ok | ok |
+| 2.00 s | 0.50 m/s² | 949 mg | ok | ok |
+
+**The crossovers:** the ramp dips under **850 mg** once acceleration
+exceeds 1.47 m/s² (0 → 1 m/s in under **0.68 s**), and under **500 mg**
+only above 4.91 m/s² (under **0.20 s**).
+
+At 500 mg the ramp cannot have caused the false trips unless this hoist
+reaches 1 m/s in under 0.2 s, which is implausible. So the cause really
+was a transient 25–50 ms long sitting on top of the ramp.
+
+### Do not assume 850 mg can be restored
+
+A tempting conclusion from the table above is that a gentle ramp leaves
+room to go back to the 850 mg default and keep the partial-failure
+sensitivity. **The evidence points the other way.**
+
+The transient went *below 500 mg* — that is why it tripped. A dip that
+reaches below 500 is necessarily below 850 for **longer**, because it
+crosses the higher threshold earlier and recovers past it later. So at
+850 mg the same transient would sit under threshold for longer than the
+25–50 ms it managed at 500 mg, and 50 ms would probably not reject it.
+Restoring 850 mg would mean a longer confirm time, which costs arrest
+distance — the opposite trade.
+
+**The measurement that settles it** is the depth and duration of that
+transient, and the device already records both:
+
+| Register | What it tells you |
+|---|---|
+| **56** | Minimum magnitude reached — how deep the dip went |
+| **55** | Duration below threshold — how long it lasted |
+
+Provoke a false trip at a low threshold and short confirm (25 ms) and
+read registers 55 and 56, or capture normal operation with
+`tools/ctx311_capture.py`, which summarises both per event. With those
+two numbers the threshold/time corner can be chosen rather than guessed.
+
 ### Arrestor sizing must be recomputed — H-06
 
 The sizing table in the register map assumed the assembly starts from
-rest. This machine runs at **1 m/s**, so a failure during descent starts
-from there:
+rest. **Starting from rest describes the start of the move, not the
+state in which a support failure occurs.** The assembly reaches 1 m/s
+and then stays there for most of its travel — 60 % of the time on a 2 m
+move at 1 m/s², rising to ~90 % on a 5 m move at 2 m/s² — so a failure
+at full speed is both the worst case and the likeliest one:
 
 | | From rest | Descending at 1 m/s |
 |---|---|---|
