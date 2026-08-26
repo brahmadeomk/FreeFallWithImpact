@@ -168,19 +168,48 @@ At 500 mg the ramp cannot have caused the false trips unless this hoist
 reaches 1 m/s in under 0.2 s, which is implausible. So the cause really
 was a transient 25–50 ms long sitting on top of the ramp.
 
-### Do not assume 850 mg can be restored
+### Field result 2 — 850 mg at 50 ms also runs clean
 
-A tempting conclusion from the table above is that a gentle ramp leaves
-room to go back to the 850 mg default and keep the partial-failure
-sensitivity. **The evidence points the other way.**
+**Observed:** confirm time 50 ms with the threshold back at the **850 mg
+default**, no arrest trigger during normal movement.
 
-The transient went *below 500 mg* — that is why it tripped. A dip that
-reaches below 500 is necessarily below 850 for **longer**, because it
-crosses the higher threshold earlier and recovers past it later. So at
-850 mg the same transient would sit under threshold for longer than the
-25–50 ms it managed at 500 mg, and 50 ms would probably not reject it.
-Restoring 850 mg would mean a longer confirm time, which costs arrest
-distance — the opposite trade.
+**This is the better setting, and it should be kept.** It has the same
+observed false-trip behaviour as 500 mg / 50 ms and roughly three times
+the sensitivity to the failure the product exists for:
+
+| Register 50 | Detects a loss of | A 30 % unload (~700 mg) |
+|---:|---|---|
+| **850 mg** | ~15 % of support | **trips** |
+| 500 mg | ~50 % of support | does not trip |
+
+It also means the concern raised under field result 1 — that 500 mg
+would miss a partial slip — no longer applies. The installation is back
+on the design default.
+
+**What it tells us about the transient.** The prediction below was that
+850 mg would probably *not* survive 50 ms. It did, and the reasoning
+that follows is left in place because being wrong about it is
+informative: the transient must be a **sharp spike**, not a gradual sag.
+The entire excursion — down through 850 mg, past 500 mg, and back — fits
+inside 50 ms. That is the signature of backlash take-up or a mechanical
+snatch, not of a slow load transfer.
+
+### The prediction this disproved, and why it was wrong
+
+It was argued here that 850 mg probably could **not** be restored: the
+transient went below 500 mg, so it is necessarily below 850 mg for
+*longer* — it crosses the higher threshold earlier and recovers past it
+later — and 50 ms would therefore not reject it.
+
+The first half of that is still true. The conclusion was not. Duration
+below 850 mg is indeed longer than duration below 500 mg, but both are
+under 50 ms, so the confirm time rejects both. The error was assuming
+the difference would be large, which only holds for a *slow* dip. For a
+sharp spike the two durations are close together and the argument does
+not bite.
+
+**Measure, do not infer.** The device records what is needed to settle
+this directly — see below.
 
 **The measurement that settles it** is the depth and duration of that
 transient, and the device already records both:
@@ -194,6 +223,51 @@ Provoke a false trip at a low threshold and short confirm (25 ms) and
 read registers 55 and 56, or capture normal operation with
 `tools/ctx311_capture.py`, which summarises both per event. With those
 two numbers the threshold/time corner can be chosen rather than guessed.
+
+### Measuring the margin — registers 55 and 56 record near-misses
+
+Neither field result says *how close* the setting came to tripping, and
+that is what decides whether it survives a colder morning, a heavier
+load or a worn component. The device already records it, because both
+registers track a below-threshold run **whether or not it ever trips**:
+
+| Register | What it holds | Margin it gives you |
+|---|---|---|
+| **56** | Deepest magnitude reached since boot or `clear-los` — it accumulates, so it is the worst dip in the whole window | **Threshold margin.** Compare with register 50 |
+| **55** | Duration of the **last** below-threshold run | **Time margin.** Compare with register 52 |
+
+Procedure:
+
+1. `tools/ctx311_client.py --port /dev/ttyUSB0 command clear-los` to
+   reset the record.
+2. Run normal operation for a representative period.
+3. Read registers 55 and 56.
+
+If register 55 reads 30 ms against a 50 ms confirm, there is 20 ms of
+margin. If it reads 48 ms, the setting is on the edge and one stiffer
+start will trip it. Register 56 works the same way against register 50:
+850 mg configured and 700 mg observed is 150 mg of headroom.
+
+Better still, run `tools/ctx311_capture.py` through normal operation —
+it polls continuously, so it catches runs a single read would miss, and
+register 55 only holds the **last** one.
+
+> Note: register 56 reads **0** when nothing has dipped below threshold
+> at all, which is indistinguishable from a true 0 mg reading. Check
+> register 54 and register 55 alongside it — all three at zero means
+> nothing happened.
+
+### Still unproven: how long is "normal operation"?
+
+Both field results are absence-of-trip observations, and absence over a
+short window is weak evidence. The original false trips at 25 ms
+appeared at some rate that was never recorded; if they were occasional,
+a handful of clean cycles at 50 ms proves little.
+
+Before treating this as commissioned, run the **false-positive run**
+below for a period comparable to the rev H idle soak in
+`HARDWARE_VALIDATION.md` — 4 h 48 min there — with registers 54, 55, 56
+and 61 read at the end.
 
 ### Arrestor sizing must be recomputed — H-06
 
