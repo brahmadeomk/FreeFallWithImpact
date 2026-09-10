@@ -274,7 +274,10 @@ static void test_identification_registers()
   /* 9 -> 10: registers 64-68 added for tilt. Appending cannot make a
      map-9 master misread what it already reads, but the map changed and
      a master must acknowledge it, so the version moves. */
-  CHECK_EQ(holdingRegs[MapVersionReg], 12, "reg 43 map version");
+  /* 12 -> 13: FAULT_ZERO_DATA occupies reg 61 bit 7. A map-12 master
+     decodes that register bit by bit and has no case for bit 7, so it
+     would read a dead sensor bus as no fault at all. */
+  CHECK_EQ(holdingRegs[MapVersionReg], 13, "reg 43 map version");
   CHECK_EQ(holdingRegs[FwVersionReg], (2 << 8) | 0, "reg 42 firmware version");
   CHECK(holdingRegs[BuildDateReg] != 0, "reg 44 build date is populated");
 
@@ -525,6 +528,8 @@ static void armed()
   settleCount = SETTLE_SAMPLES;   /* skip the 2 s boot suppression */
   losLatched = 0; losCount = 0; losTripCount = 0;
   losMinMag2 = 0xFFFFFFFFUL;
+  zeroRun = 0; zeroDataFault = 0; frozenTripFault = 0;
+  stuckCount = 0; rawSeeded = 0;
   PORTC |= (1 << LOS_PORT_BIT);
 }
 
@@ -538,6 +543,8 @@ static void arming()
   settleCount = 0;
   losLatched = 0; losCount = 0; losTripCount = 0;
   losMinMag2 = 0xFFFFFFFFUL;
+  zeroRun = 0; zeroDataFault = 0; frozenTripFault = 0;
+  stuckCount = 0; rawSeeded = 0;
   PORTC |= (1 << LOS_PORT_BIT);
   cfgWasDefaulted = false;   /* isolate arming from the defaulted-EEPROM fault */
   faultFlags = 0;
@@ -698,6 +705,167 @@ static void test_frozen_data_path_is_detected()
   runDiagnostics(1589);
   CHECK(faultFlags & FAULT_STUCK,
         "identical samples for ~1 s raise FAULT_STUCK");
+}
+
+/* ------------------------------------------------------------------
+   Dead data path. The failure these cover is a MISO-only break: SCLK,
+   MOSI and CS still reach the ADXL345, so it keeps clearing DATA_READY
+   and the sample rate stays perfect. FAULT_RATE is blind to it, and
+   FAULT_STUCK is a full second late -- far too late, because a
+   magnitude of zero is below every settable LOS threshold, so the LOS
+   path would otherwise trip first and call a severed cable a fall.
+   ------------------------------------------------------------------ */
+
+/* All three axes exactly zero -- a grounded or undriven MISO. */
+static void feedZeros(int n)
+{
+  adxlFeed.x = 0; adxlFeed.y = 0; adxlFeed.z = 0;
+  for (int i = 0; i < n; i++) { g_micros += 629; myHandler(); }
+}
+
+static void test_zero_data_raises_sensor_fault()
+{
+  printf("DIAG: an all-zero data path is a sensor fault, not a fall\n");
+  armed();
+  faultFlags = 0;
+
+  feedZeros(ZERO_DATA_LIMIT - 1);
+  CHECK(!zeroDataFault, "one sample short of the limit does not fault");
+  CHECK(!losLatched, "and does not engage the arrest yet");
+
+  feedZeros(1);
+  CHECK(zeroDataFault, "ZERO_DATA_LIMIT exact zeros raise the flag");
+  CHECK(losLatched, "and engage the arrest immediately");
+  CHECK(!(PORTC & (1 << LOS_PORT_BIT)), "arrest output driven low");
+  CHECK_EQ(losByFault, 1,
+           "attributed to a fault -- reg 49 bit5 set, not a fall");
+
+  runDiagnostics(1589);
+  CHECK(faultFlags & FAULT_ZERO_DATA, "published as FAULT_ZERO_DATA");
+  CHECK(faultFlags & FAULT_DETECTION_LOST,
+        "FAULT_ZERO_DATA counts as detection lost");
+  CHECK(!(PORTC & (1 << HEALTH_PORT_BIT)), "health output opens");
+}
+
+static void test_zero_data_beats_the_los_path()
+{
+  printf("DIAG: the zero check fires before the LOS confirm time\n");
+  armed();
+  faultFlags = 0;
+
+  /* This is the whole point of a separate, faster check. At the 50 ms
+     setting in use on site the LOS path needs ~80 samples; the zero
+     check must reach its verdict well inside that. */
+  CHECK(ZERO_DATA_LIMIT < losSamplesRequired,
+        "zero limit is shorter than the LOS confirm window");
+  CHECK(ZERO_DATA_LIMIT < STUCK_SAMPLE_LIMIT,
+        "and much shorter than the stuck limit");
+
+  feedZeros(ZERO_DATA_LIMIT);
+  CHECK_EQ(losByFault, 1, "the fault wins the race, so the label is right");
+  CHECK(losCount < losSamplesRequired,
+        "the LOS path had not yet reached its confirm count");
+}
+
+static void test_zero_data_respects_the_fault_action()
+{
+  printf("DIAG: zero data honours LosFaultActionReg = 0\n");
+  armed();
+  faultFlags = 0;
+  losFaultAction = 0;                    /* configured to hold position */
+
+  /* Short of the LOS confirm window, so only the fault path is in
+     play. The fault is still reported -- suppressing the arrest was
+     never meant to suppress the diagnosis. */
+  feedZeros(ZERO_DATA_LIMIT + 2);
+  CHECK(zeroDataFault, "the fault is still raised");
+  CHECK(!losLatched, "but the arrest is not engaged when told not to");
+  CHECK(PORTC & (1 << LOS_PORT_BIT), "arrest output left closed");
+
+  /* Past the confirm window the LOS path trips on its own evidence,
+     and it is NOT gated on losFaultAction -- a magnitude of zero is
+     below the threshold, whatever caused it. That is deliberate: the
+     fail-safe direction is not weakened by a diagnostic setting.
+     Attribution still tells the operator which it was. */
+  feedZeros((int)losSamplesRequired + 5);
+  CHECK(losLatched, "the LOS path still trips regardless of the setting");
+  CHECK_EQ(losByFault, 1, "and is attributed to the fault");
+
+  losFaultAction = 1;                    /* restore the default */
+}
+
+static void test_zero_data_blocks_rearm()
+{
+  printf("DIAG: a dead bus cannot be cleared while it is still dead\n");
+  armed();
+  faultFlags = 0;
+
+  feedZeros(ZERO_DATA_LIMIT + 10);
+  CHECK(losLatched, "arrest engaged");
+
+  /* CLEAR_FAULTS then CLEAR_LOS is the sequence an operator reaches
+     for. faultFlags is only refreshed on the 1 Hz tick, so if the
+     clear test looked at it alone this would re-arm over a bus that
+     is still returning zeros. */
+  holdingRegs[CommandReg] = CMD_CLEAR_FAULTS;
+  checkCommandRegister();
+  CHECK_EQ(faultFlags, 0, "faults cleared");
+  CHECK(zeroRun >= ZERO_DATA_LIMIT,
+        "but the live zero run survives -- it is evidence, not a record");
+
+  holdingRegs[CommandReg] = CMD_CLEAR_LOS;
+  checkCommandRegister();
+  CHECK(losLatched, "re-arm refused while the bus is still returning zeros");
+  CHECK(!(PORTC & (1 << LOS_PORT_BIT)), "arrest output still low");
+  CHECK_EQ(holdingRegs[CommandStatusReg], CMD_STATUS_UNKNOWN,
+           "and the command is acknowledged as not carried out");
+}
+
+static void test_frozen_los_window_is_attributed_to_a_fault()
+{
+  printf("DIAG: a frozen window under threshold is a fault, not a fall\n");
+  armed();
+  faultFlags = 0;
+
+  /* An OPEN MISO pulled high reads 0xFFFF on every axis -- -1,-1,-1,
+     about 7 mg. Not zero, so the zero check does not see it, and only
+     ~1/50th of the way to STUCK_SAMPLE_LIMIT when the LOS path is
+     ready to trip. Attribution at the trip instant is what catches
+     it, and it works at any threshold and time setting. */
+  adxlFeed.x = -1; adxlFeed.y = -1; adxlFeed.z = -1;
+  for (uint16_t i = 0; i < losSamplesRequired + 5; i++) {
+    g_micros += 629; myHandler();
+  }
+
+  CHECK(losLatched, "the arrest still engages -- fail-safe is unchanged");
+  CHECK_EQ(losByFault, 1, "but it is reported as a fault, not an event");
+  CHECK(frozenTripFault, "and the frozen-window flag is set");
+  CHECK(stuckCount < STUCK_SAMPLE_LIMIT,
+        "well before the slow stuck check would have noticed");
+
+  runDiagnostics(1589);
+  CHECK(faultFlags & FAULT_STUCK, "published as FAULT_STUCK");
+}
+
+static void test_real_fall_is_still_an_event()
+{
+  printf("DIAG: a real fall is not mislabelled as a sensor fault\n");
+  armed();
+  faultFlags = 0;
+
+  /* A live part dithers all the way down. This is the regression that
+     matters: the two checks above must not turn a genuine loss of
+     support into a sensor error, or every real event on site gets
+     investigated as a wiring problem. */
+  feedLive(20, (int)losSamplesRequired + 5);   /* ~78 mg, deep in fall */
+  CHECK(losLatched, "a real fall still trips");
+  CHECK_EQ(losByFault, 0, "attributed to an event");
+  CHECK(!zeroDataFault, "no zero-data fault");
+  CHECK(!frozenTripFault, "no frozen-window fault");
+
+  runDiagnostics(1589);
+  CHECK(!(faultFlags & FAULT_ZERO_DATA), "and none published");
+  CHECK(!(faultFlags & FAULT_STUCK), "nor a stuck fault");
 }
 
 static void test_live_data_does_not_raise_stuck()
@@ -1320,6 +1488,12 @@ int main()
   test_los_settings_follow_the_rev_h_pattern();
   test_dead_sensor_is_detected();
   test_frozen_data_path_is_detected();
+  test_zero_data_raises_sensor_fault();
+  test_zero_data_beats_the_los_path();
+  test_zero_data_respects_the_fault_action();
+  test_zero_data_blocks_rearm();
+  test_frozen_los_window_is_attributed_to_a_fault();
+  test_real_fall_is_still_an_event();
   test_live_data_does_not_raise_stuck();
   test_advisory_faults_do_not_engage_the_arrest();
   test_plausibility_suspended_during_an_event();

@@ -328,15 +328,45 @@ engages if register 63 is 1. **Advisory** opens health only.
 | Bit | Hex | Dec | Name | Class | Meaning |
 |---|---|---:|---|---|---|
 | 0 | `0x01` | 1 | RATE | **detection lost** | Sample rate outside 1200–2000 Hz — dead part, dead SPI, detached INT1 |
-| 1 | `0x02` | 2 | STUCK | **detection lost** | Bit-identical samples ~1 s. A real ADXL345 always dithers |
+| 1 | `0x02` | 2 | STUCK | **detection lost** | Bit-identical samples ~1 s — **or** a loss-of-support trip whose entire confirm window was bit-identical. A real ADXL345 always dithers |
 | 2 | `0x04` | 4 | IMPLAUSIBLE | **detection lost** | Magnitude away from 1 g at rest >2 s. Suspended during a real event |
 | 3 | `0x08` | 8 | CONFIG | advisory | EEPROM was defaulted. Check registers 22, 50, 52 |
 | 4 | `0x10` | 16 | BOOTCHECK | **detection lost** | Boot plausibility check failed |
 | 5 | `0x20` | 32 | WDT_RESET | advisory | Watchdog fired at some point. Sticky until cleared |
 | 6 | `0x40` | 64 | SUPPLY | advisory | Controller rail below the register 71 limit for ~3 s. Opens health, never arrests |
+| 7 | `0x80` | 128 | ZERO_DATA | **detection lost** | All three axes reading exact zero for ~10 ms. **Sensor communication failure — check the MISO wiring**, not the structure |
 
-Detection-lost mask = `0x17` (bits 0, 1, 2, 4). If `reg61 & 0x17` is
+Detection-lost mask = `0x97` (bits 0, 1, 2, 4, 7). If `reg61 & 0x97` is
 non-zero, `CLEAR_LOS` will be **refused** until the fault clears.
+
+#### Bit 7 is a wiring fault, not a fall
+
+If **MISO alone** fails — open wire, or shorted to ground — the ADXL345
+still receives its reads over SCLK/MOSI/CS, still clears DATA_READY, and
+register 27 shows a perfect ~1589 Hz. Only the data coming back is
+missing. A grounded MISO reads 0 mg, which is below every threshold, so
+without this check the device would call a severed cable a fall.
+
+**Signature of a MISO failure, as seen from the master:**
+
+| Register | Reads |
+|---|---|
+| 27 sample rate | normal, ~1589 Hz — this is why the rate check misses it |
+| 60 raw magnitude | **0 mg** (grounded) or ~7 mg (open, pulled high) |
+| 61 fault flags | `0x80` ZERO_DATA, or `0x02` STUCK for the open-high case |
+| 49 LOS status | bit 5 **set** — tripped by fault |
+| PC1 arrest | engaged |
+
+**Signature of a genuine fall, for contrast:** register 61 is `0`,
+register 49 bit 5 is **clear**, register 56 shows a minimum magnitude
+that is low but not zero, and register 55 a plausible duration.
+
+If you want to reproduce it on the bench: with the unit powered and
+running, pull the MISO wire off the ADXL345 and short that input to
+ground. The arrest must engage within ~10 ms and register 61 must read
+`0x80`. Reconnect, then `CLEAR_FAULTS` followed by `CLEAR_LOS` — the
+second command is refused until the live zero run has actually stopped,
+so a still-dead bus cannot be cleared away.
 
 ### Register 25 — Impact status (bitfield, read-only)
 

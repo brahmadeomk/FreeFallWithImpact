@@ -17,8 +17,8 @@ ring buffers, the Modbus frame buffer, the register array — and not by
 the sketch's own declarations, which are what you see when you read the
 source.
 
-The estimate was low. Measured below: **1042 B for CTX311**, 68 % above
-the estimate.
+The estimate was low. Built figure below: **1103 B for CTX311**, 78 %
+above the estimate.
 
 ## Figures
 
@@ -27,14 +27,14 @@ Arduino Nano, ATmega328P, 16 MHz. 32256 B flash available to the sketch
 
 | | CTX310 rev H | CTX311 rev A |
 |---|---:|---:|
-| Flash (`.text` + `.data`) | 14678 B (44.8 %) | 20162 B (61.5 %) |
-| Static SRAM (`.data` + `.bss`) | 916 B (44.7 %) | **1099 B (53.7 %)** |
-| Free SRAM (static) | 1132 B (55 %) | **949 B (46 %)** |
-| `.text` | 14620 B | 19472 B |
-| `.data` | 58 B | 66 B |
-| `.bss` | 858 B | 1009 B |
+| Flash (`.text` + `.data`) | 14678 B (44.8 %) | 20456 B (62.4 %) |
+| Static SRAM (`.data` + `.bss`) | 916 B (44.7 %) | **1103 B (53.9 %)** |
+| Free SRAM (static) | 1132 B (55 %) | **945 B (46 %)** |
+| `.text` | 14620 B | 20380 B |
+| `.data` | 58 B | 76 B |
+| `.bss` | 858 B | 1027 B |
 
-CTX311 costs **+5484 B flash and +183 B static SRAM** over CTX310. The
+CTX311 costs **+5778 B flash and +187 B static SRAM** over CTX310. The
 SRAM delta is mostly the raised `BUFFER_SIZE` (128 → 160, +32 B) plus the
 loss-of-support state and the extra registers.
 
@@ -50,7 +50,9 @@ libgcc's routines get linked in. The table itself is in PROGMEM: as
 Supply monitoring (map 11) costs **+294 B flash and +15 B SRAM** — it
 reuses `isqrt32`-free integer division and the otherwise idle ADC. The
 low-supply advisory (map 12) adds a further **+330 B flash and +9 B
-SRAM**.
+SRAM**. The sensor-communication fault (map 13 — the zero-data check
+and the trip-instant attribution) adds **+294 B flash and +4 B SRAM**,
+of which **+186 B is inside `myHandler()`**.
 
 **Watch the Modbus buffer, not the SRAM.** A full sweep is now 73
 registers = **151 bytes**, against `BUFFER_SIZE` 160 — **9 bytes spare**,
@@ -65,15 +67,23 @@ change).
 
 ### Where the ISR time goes
 
-`myHandler()` is 3380 B of that flash. Removing the loss-of-support
-block entirely takes it to 2848 B, so the block costs **532 B**, of
-which **402 B is the detection itself** and 130 B the stuck-data check.
-The cycle counts are in the sketch header and were computed the same
-way — see T-03.
+`myHandler()` is **3566 B** of that flash. Removing the loss-of-support
+block entirely took it to 2848 B when the block was first landed, so
+the block cost **532 B** then — **402 B** the detection itself and
+130 B the stuck-data check — and the map-13 zero-data check has since
+added **186 B** on top. The cycle counts are in the sketch header and
+were computed the same way — see T-03.
+
+The map-13 addition sits on the ISR's **sustained** path, so it is the
+one to watch: 10 cycles (0.6 µs) on a live sensor with a non-zero X
+axis, 16 (1.0 µs) if the part is mounted with X and Y both near zero.
+Against a 629 µs sample period that is under 0.2 %. The trip-instant
+attribution runs on one sample per event and does not enter the
+sustained figure.
 
 ## What "free SRAM" here does and does not mean
 
-The 1006 B above is **static** free SRAM. It is the space the stack has
+The 945 B above is **static** free SRAM. It is the space the stack has
 to live in, not headroom known to be spare. It does not say how much of
 that the stack actually consumes — the deepest path is an ISR firing on
 top of `loop()` inside a Modbus response. The instrumentation below
@@ -111,8 +121,8 @@ flag.
 
 | Build | Flash | Static SRAM | `stackPaint` in image |
 |---|---:|---:|---|
-| release | 20162 B | 1099 B | absent |
-| `-DCTX311_STACK_DEBUG` | 20208 B (+46 B) | 1099 B (no change) | present |
+| release | 20456 B | 1103 B | absent |
+| `-DCTX311_STACK_DEBUG` | 20502 B (+46 B) | 1103 B (no change) | present |
 
 Verified in the linked image rather than assumed: the painter survives
 `--gc-sections`, loads `Z = _end` (0x0512), the canary `0xC5`, and loops
@@ -122,7 +132,7 @@ stored to `holdingRegs+0x60`, which is register 48.
 `test/run_tests.sh` builds and runs the CTX311 suite a third time with
 the flag on. The guarded code is invisible to a normal build, so that
 pass is what stops it rotting; and because the host stub returns 0, all
-143 assertions must still hold — if that pass ever diverges, the debug
+249 assertions must still hold — if that pass ever diverges, the debug
 build has started changing behaviour it should not.
 
 **The number itself still needs hardware.** Nothing here has been

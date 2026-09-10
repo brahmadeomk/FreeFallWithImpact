@@ -1,11 +1,12 @@
-# CTX311 register map — map version 12 (firmware rev A)
+# CTX311 register map — map version 13 (firmware rev A)
 
 Modbus RTU slave, 9600 8N1, default slave ID 71. All registers are
 holding registers (function 3 to read, 6 or 16 to write).
 
-**Read register 43 on connect.** It carries the map version, now **12**
+**Read register 43 on connect.** It carries the map version, now **13**
 (9 added the loss-of-support block, 10 tilt in 64–68, 11 supply
-monitoring in 69–70, 12 the low-supply advisory in 71–72). A
+monitoring in 69–70, 12 the low-supply advisory in 71–72, 13 the
+sensor-communication fault in register 61 bit 7). A
 CTX310 master expecting version 8 must refuse to ingest — and CTX311 changes
 more than the map, so this check matters more than it did before.
 
@@ -376,11 +377,51 @@ the data.
 | Bit | Name | Detection lost? | Meaning |
 |---|---|---|---|
 | 0 | RATE | **yes** | Sample rate outside 1200–2000 Hz. Catches a dead part, dead SPI bus, or detached INT1 |
-| 1 | STUCK | **yes** | Bit-identical samples for ~1 s. A real ADXL345 always dithers |
+| 1 | STUCK | **yes** | Bit-identical samples for ~1 s, **or** a loss-of-support trip whose entire confirm window was bit-identical. A real ADXL345 always dithers |
 | 2 | IMPLAUSIBLE | **yes** | Magnitude away from 1 g at rest for >2 s. Suspended during a genuine event |
 | 3 | CONFIG | no | EEPROM defaulted |
 | 4 | BOOTCHECK | **yes** | Boot check failed |
 | 5 | WDT_RESET | no | Sticky: the watchdog fired. Survives until `CLEAR_FAULTS` |
+| 6 | SUPPLY | no | Controller rail below register 71 for 3 consecutive readings. Advisory — see below |
+| 7 | ZERO_DATA | **yes** | All three axes reading exact zero for ~10 ms. The data path is returning an undriven bus, not the part |
+
+### Bit 7 — the sensor-communication fault (new in map 13)
+
+This is the one accelerometer failure the rate check cannot see. If
+**MISO alone** fails — an open wire, or a short to ground — SCLK, MOSI
+and CS still reach the ADXL345, so it keeps clearing DATA_READY, the
+interrupt keeps arriving, and register 27 shows a perfect 1589 Hz. Every
+read returns the idle bus.
+
+A grounded MISO reads 0,0,0 — a magnitude of **0 mg**, which is below
+every settable loss-of-support threshold. Without this check the
+loss-of-support path trips first and the device reports **a severed
+cable as a genuine fall**: register 49 bit 5 clear, register 55 showing a
+plausible run length, and an operator free to clear it and carry on.
+
+Two checks close that:
+
+1. **ZERO_DATA (bit 7)** — 16 consecutive samples of exact 0,0,0, about
+   **10 ms**. Raises the fault and engages the arrest as a fault
+   (register 49 bit 5 **set**). Exact zeros are impossible on a live
+   part: at rest gravity puts ~256 counts on some axis, and in free fall
+   the part's own noise dithers by several LSB.
+2. **Trip-instant attribution** — when the loss-of-support path latches,
+   if the *entire* confirm window was bit-identical, the trip is
+   attributed to a fault and `STUCK` (bit 1) is raised immediately
+   rather than a second later. This catches the other frozen patterns —
+   an open MISO pulled high reads −1,−1,−1, about 7 mg — and works at
+   any threshold and confirm-time setting.
+
+**The output is the same either way: the arrest engages.** What changes
+is the reason reported, and whether `CLEAR_LOS` will re-arm. The live
+zero run survives `CLEAR_FAULTS` deliberately, so a `CLEAR_FAULTS` /
+`CLEAR_LOS` pair cannot re-arm the device over a bus that is still dead.
+
+Setting register 63 to 0 suppresses the *fault-initiated* trip, but the
+loss-of-support path still trips on a magnitude of zero, because zero is
+below the threshold whatever caused it. A diagnostic setting does not
+weaken the fail-safe direction.
 
 **Detection-lost faults engage the arrest** (when register 63 = 1),
 because if the channel is dead the protective function is gone.
@@ -392,7 +433,13 @@ refusal is reported through register 46. Re-arming a device that cannot
 detect would be a lie.
 
 The rate check rides the 1 Hz tick, so **worst-case detection of a dead
-sensor is about one second.** Quote that figure, not "immediate".
+sensor is about one second.** Quote that figure, not "immediate". The
+precise worst case is ~1.25 s: a window fails only once the count drops
+below 1200 of 1589, so a part that dies in the last quarter of a window
+is caught at the end of the next one.
+
+`ZERO_DATA` is the exception and is much faster — **~10 ms** — because it
+has to be, to beat the loss-of-support confirm time.
 
 ## New command codes
 

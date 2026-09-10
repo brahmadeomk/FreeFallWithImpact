@@ -79,6 +79,18 @@
         at least one LSB. Bit-identical consecutive samples for one
         second means the data path is frozen even though interrupts
         are still arriving.
+     2a. ZERO-DATA DETECTION. Check 1 cannot see a MISO-only failure:
+        SCLK, MOSI and CS still reach the part, so it keeps clearing
+        DATA_READY and the sample rate stays perfect while every read
+        returns an undriven bus. Check 2 sees it, but a full second
+        too late -- a magnitude of zero is below every settable LOS
+        threshold, so the LOS path trips first and reports a severed
+        cable as a genuine fall. Exact 0,0,0 for ZERO_DATA_LIMIT
+        samples (~20 ms) raises FAULT_ZERO_DATA and engages the
+        arrest as a FAULT. Any other frozen pattern -- an open MISO
+        pulled high reads -1,-1,-1 -- is caught by attributing the
+        LOS trip at the instant it fires, which works at any threshold
+        and time setting. See the LOS block.
      3. PLAUSIBILITY. At rest the magnitude must sit in a band around
         1 g. Sustained departure that is not a loss-of-support event
         means the part is mis-scaled or damaged.
@@ -440,6 +452,37 @@
    PLAUSIBLE: at rest the raw magnitude must sit near 1 g. Checked
    only while NOT in a loss-of-support event, for obvious reasons.  */
 #define STUCK_SAMPLE_LIMIT   1589U     /* ~1 s of identical samples */
+
+/* ---- dead data path: exact zeros ----
+   A live ADXL345 CANNOT report 0,0,0. At rest one axis carries
+   gravity; in free fall all three carry the part's own noise, which
+   at 1600 Hz is several LSB. Exact zeros on all three axes mean the
+   reads are returning an undriven bus, not the part -- an open or a
+   grounded MISO, with SCLK/MOSI/CS still working well enough that the
+   ADXL keeps clearing DATA_READY and the ISR keeps firing at full
+   rate. That is the one comms failure the rate check cannot see.
+
+   Why this is separate from STUCK_SAMPLE_LIMIT, and 50x faster: the
+   stuck check needs a full second because a very quiet installation
+   could in principle repeat a sample, and a nuisance arrest is a real
+   cost on a hoist. Exact zeros carry no such ambiguity, so the limit
+   is set by how fast it must be, not by how sure it must be.
+
+   It has to be fast because rawMag2 == 0 is below EVERY settable LOS
+   threshold. Left alone, the LOS path trips first and reports a
+   severed cable as a genuine fall. 16 samples is 10 ms: inside the
+   50 ms confirm time in use on site, and still with 30 samples to
+   spare against the 25 ms default. It cannot beat LOS_TIME_MIN_MS
+   (5 ms, 8 samples), and is not asked to -- below the zero limit the
+   trip instant is attributed instead. See the LOS block.
+
+   False-positive cost of 16: exact zeros on all three axes cannot
+   happen at rest, because gravity puts ~256 counts somewhere. Only
+   free fall gets close, and there the part's own noise dithers by
+   several LSB -- assume a pessimistic 1 LSB and 16 consecutive
+   all-zero triples still come out around 1e-19. The limit is set by
+   how fast this must be, not by how sure.                          */
+#define ZERO_DATA_LIMIT      16U       /* ~10 ms of exact 0,0,0 */
 #define RATE_MIN_HZ          1200U
 #define RATE_MAX_HZ          2000U
 #define PLAUSIBLE_MIN_MG     500U
@@ -454,6 +497,7 @@
 #define FAULT_BOOTCHECK   0x0010   /* boot check failed              */
 #define FAULT_WDT_RESET   0x0020   /* sticky: watchdog fired         */
 #define FAULT_SUPPLY      0x0040   /* controller rail below reg 71   */
+#define FAULT_ZERO_DATA   0x0080   /* all axes reading exact zero    */
 
 /* NOT every fault costs us the protective function, and treating them
    alike is wrong in both directions.
@@ -480,7 +524,8 @@
    configurable threshold -- one measured by an untrimmed bandgap, at
    that -- would be acting on the weakest signal in the device.      */
 #define FAULT_DETECTION_LOST (FAULT_RATE | FAULT_STUCK | \
-                              FAULT_IMPLAUSIBLE | FAULT_BOOTCHECK)
+                              FAULT_IMPLAUSIBLE | FAULT_BOOTCHECK | \
+                              FAULT_ZERO_DATA)
 
 /* Boot check state, published in reg 62 */
 #define BOOT_PENDING  0
@@ -608,6 +653,14 @@
                    reserved and always read 0. Writing reg 35 no longer
                    does anything, so a master built for map 7 would
                    believe it had armed a trip that does not exist.)
+       9..12 = CTX311 rev A -- loss-of-support registers, arming
+                   window, tilt, supply monitoring. Tabulated in
+                   docs/REGISTER_MAP_CTX311.md rather than here.
+      13 = +FAULT_ZERO_DATA (reg 61 bit 7). A master built for map 12
+                   decodes reg 61 bit by bit and has no case for bit 7,
+                   so it would report a dead sensor bus as no fault at
+                   all -- the exact misread this counter exists to
+                   prevent.
    BUILD_DATE      derived from __DATE__ at compile time, packed as
        (year-2000)<<9 | month<<5 | day.  Decode on the master:
        year = 2000 + (v >> 9);  month = (v >> 5) & 0x0F;  day = v & 0x1F
@@ -615,7 +668,7 @@
 #define FW_VERSION_MAJOR      2
 #define FW_VERSION_MINOR      0          /* CTX311 revision A */
 #define FW_VERSION_PACKED     (((FW_VERSION_MAJOR) << 8) | (FW_VERSION_MINOR))
-#define REGISTER_MAP_VERSION  12
+#define REGISTER_MAP_VERSION  13
 
 #define BUILD_YEAR  ((__DATE__[7]-'0')*1000 + (__DATE__[8]-'0')*100 + \
                      (__DATE__[9]-'0')*10   + (__DATE__[10]-'0'))
@@ -838,6 +891,14 @@ volatile int      lastRawX = 0, lastRawY = 0, lastRawZ = 0;
 volatile uint16_t stuckCount = 0;
 volatile uint8_t  rawSeeded  = 0;
 
+/* dead-data-path detection. Both flags are RAISED in the ISR and
+   cleared only by CMD_CLEAR_FAULTS: runDiagnostics() runs at 1 Hz and
+   would otherwise miss a 20 ms event entirely. They are one byte each
+   so the read in loop() is atomic without a critical section.     */
+volatile uint16_t zeroRun        = 0;   /* consecutive exact 0,0,0 */
+volatile uint8_t  zeroDataFault  = 0;   /* -> FAULT_ZERO_DATA */
+volatile uint8_t  frozenTripFault = 0;  /* LOS window was frozen -> FAULT_STUCK */
+
 /* --------------------------- diagnostics ---------------------------- */
 volatile uint16_t isrMaxTicks = 0;   /* Timer1 ticks, 0.5 us each */
 volatile uint16_t isrCount     = 0;
@@ -883,7 +944,10 @@ uint16_t thresholdMg     = DEFAULT_THRESHOLD_MG;
 uint16_t losThresholdMg  = DEFAULT_LOS_THRESHOLD_MG;
 uint16_t losTimeMs       = DEFAULT_LOS_TIME_MS;
 uint32_t losHoldMs       = DEFAULT_LOS_HOLD_MS;
-uint8_t  losFaultAction  = 1;
+/* volatile because the ISR now reads it: the zero-data check engages
+   the arrest itself, and must honour the configured fault action
+   without waiting for the 1 Hz diagnostics tick. */
+volatile uint8_t losFaultAction = 1;
 
 /* Tilt state. Loop context only -- the ISR never touches any of it. */
 static int16_t       tiltRefX = 0, tiltRefY = 0, tiltRefZ = 0;
@@ -1271,7 +1335,20 @@ void checkCommandRegister()
        timer. Note it CANNOT clear a fault-driven trip: if the
        detection channel is still dead, re-arming would be a lie.  */
     case CMD_CLEAR_LOS:
-      if ((faultFlags & FAULT_DETECTION_LOST) && losFaultAction) {
+      /* faultFlags alone is not enough here. It is only refreshed on
+         the 1 Hz tick, so CLEAR_FAULTS followed immediately by
+         CLEAR_LOS would find it zero and re-arm over a bus that is
+         still dead. zeroRun is live to the last sample and survives
+         CLEAR_FAULTS, which makes the all-zero case airtight.
+
+         The frozen-pattern case (an open MISO reading -1,-1,-1) rests
+         on the latch alone, so a fast CLEAR_FAULTS/CLEAR_LOS pair can
+         re-arm it -- for one confirm window, after which the LOS path
+         trips again and re-attributes it as a fault. Worth knowing
+         before writing a master that retries in a loop. */
+      if (((faultFlags & FAULT_DETECTION_LOST) ||
+           zeroDataFault || frozenTripFault ||
+           zeroRun >= ZERO_DATA_LIMIT) && losFaultAction) {
         accepted = 0;                    /* refuse while faulted */
       } else {
         ATOMIC_BLOCK(ATOMIC_RESTORESTATE) {
@@ -1306,7 +1383,17 @@ void checkCommandRegister()
     case CMD_CLEAR_FAULTS:
       faultFlags = 0;
       implausibleRunning = 0;
-      ATOMIC_BLOCK(ATOMIC_RESTORESTATE) { stuckCount = 0; }
+      /* zeroRun is deliberately NOT reset. It is live evidence, not a
+         latched record: if the bus is still returning zeros the very
+         next sample re-raises the fault, and if it has been repaired
+         the first non-zero sample clears the run on its own. Resetting
+         it would open a 10 ms window in which CLEAR_LOS could re-arm
+         over a dead sensor. */
+      ATOMIC_BLOCK(ATOMIC_RESTORESTATE) {
+        stuckCount      = 0;
+        zeroDataFault   = 0;
+        frozenTripFault = 0;
+      }
       break;
 
     case CMD_CLEAR_PEAKHOLD:
@@ -1380,6 +1467,19 @@ void myHandler()
         300 cycles / 18.8 us   the sample that trips, worst case,
                                including the millis() call
 
+     The zero-data check adds to the common path, counted the same way
+     from the linked image:
+
+         10 cycles / 0.6 us    live sensor, X non-zero (the usual case:
+                               or/breq, then two stores clearing zeroRun)
+         16 cycles / 1.0 us    live sensor mounted with X and Y near
+                               zero, so both compares fall through
+
+     Both are on the sustained path. The trip-instant attribution --
+     one 16-bit load, an add and a compare against losSamplesRequired --
+     costs ~8 cycles and runs on exactly one sample per event, so it
+     does not enter the sustained figure at all.
+
      173 of the common-path cycles are the three squares alone. gcc
      emits them as three calls to __mulhisi3 (41 cycles each with a
      negative operand, 37 with a positive one) because the ATmega328P
@@ -1393,8 +1493,9 @@ void myHandler()
      rather than as libgcc calls.
 
      Against the budget: rev H measured 153 us in reg 19 against a
-     629 us sample period, so this lands at ~166 us typical and ~172 us
-     worst case. Comfortably inside the 250 us target.
+     629 us sample period, so this lands at ~167 us typical and ~173 us
+     worst case, zero check included. Comfortably inside the 250 us
+     target.
 
      A cycle count is still not a measurement. It excludes interrupt
      entry and exit and whatever the compiler did to the surrounding
@@ -1417,6 +1518,28 @@ void myHandler()
   lastRawX = x; lastRawY = y; lastRawZ = z;
   rawSeeded = 1;
 
+  /* ---- dead data path: exact zeros ----
+     Deliberately NOT gated on the settle window. During arming the
+     detector is suppressed because it has no gravity reference yet;
+     a bus returning zeros is not a detector that needs settling, it
+     is a detector that is not there. bootCheck() would catch it too,
+     but only after the full 2 s window.                            */
+  if (x == 0 && y == 0 && z == 0) {
+    if (zeroRun < ZERO_DATA_LIMIT) zeroRun++;
+    if (zeroRun >= ZERO_DATA_LIMIT) {
+      zeroDataFault = 1;
+      if (losFaultAction && !losLatched) {
+        PORTC &= ~(1 << LOS_PORT_BIT);       /* atomic CBI -- ARREST */
+        losLatched = 1;
+        losByFault = 1;                      /* SENSOR ERROR, not a fall */
+        losTripCount++;
+        losMs      = millis();
+      }
+    }
+  } else {
+    zeroRun = 0;
+  }
+
   if (settleCount < SETTLE_SAMPLES) {
     losCount     = 0;
     losActive    = 0;
@@ -1428,7 +1551,29 @@ void myHandler()
     if (losCount >= losSamplesRequired && !losLatched) {
       PORTC &= ~(1 << LOS_PORT_BIT);         /* atomic CBI -- ARREST */
       losLatched  = 1;
-      losByFault  = 0;
+      /* Attribute the trip at the instant it happens, because after
+         this the fault path cannot: runDiagnostics() only relabels
+         while !losLatched, and it runs 1 Hz -- twenty times too slow
+         to catch a 50 ms confirm window.
+
+         stuckCount counts REPEATS, so a run of N identical samples
+         reads N-1. If the whole confirm window was bit-identical the
+         data path is frozen and this is a comms failure wearing an
+         event's clothes: a grounded MISO reads 0,0,0, an open one
+         pulled high reads -1,-1,-1 (~7 mg), and both sit below every
+         settable threshold. A real unload cannot do this -- the part
+         dithers by several LSB even in free fall.
+
+         The output is identical either way. What changes is the
+         reason: bit5 of reg 49, and whether CMD_CLEAR_LOS will
+         re-arm. Calling a severed cable a fall would let an operator
+         clear it and walk away.                                    */
+      if ((uint32_t)stuckCount + 1U >= losSamplesRequired) {
+        losByFault      = 1;
+        frozenTripFault = 1;
+      } else {
+        losByFault = 0;
+      }
       losTripCount++;
       losMs       = millis();
     }
@@ -1615,10 +1760,15 @@ static void runDiagnostics(uint16_t measuredRate)
     faultFlags |= FAULT_RATE;
   }
 
-  /* ---- 2. frozen data path ---- */
+  /* ---- 2. frozen data path ----
+     Three ways in, at three timescales. The two ISR flags are latched
+     rather than sampled: both describe something that happened inside
+     one 1 Hz window and would be gone by the time this ran. */
   uint16_t sc;
   ATOMIC_BLOCK(ATOMIC_RESTORESTATE) { sc = stuckCount; }
   if (sc >= STUCK_SAMPLE_LIMIT) faultFlags |= FAULT_STUCK;
+  if (frozenTripFault)          faultFlags |= FAULT_STUCK;
+  if (zeroDataFault)            faultFlags |= FAULT_ZERO_DATA;
 
   /* ---- 3. plausibility ----
      Only meaningful at rest: during a genuine loss of support the

@@ -36,7 +36,7 @@ import math
 import sys
 import time
 
-EXPECTED_MAP_VERSION = 12
+EXPECTED_MAP_VERSION = 13
 REGISTER_COUNT = 73
 
 # register indices used by name
@@ -139,12 +139,15 @@ LOS_STATUS_BITS = (
 # advisory: they open health but do not touch the arrest.
 FAULT_BITS = (
     (0x0001, "RATE", True, "sample rate outside 1200-2000 Hz"),
-    (0x0002, "STUCK", True, "data path frozen"),
+    (0x0002, "STUCK", True,
+     "data path frozen (or a LOS trip whose whole window was frozen)"),
     (0x0004, "IMPLAUSIBLE", True, "magnitude not near 1 g at rest"),
     (0x0008, "CONFIG", False, "EEPROM defaulted"),
     (0x0010, "BOOTCHECK", True, "boot check failed"),
     (0x0020, "WDT_RESET", False, "watchdog fired (sticky)"),
     (0x0040, "SUPPLY", False, "controller rail below the reg 71 limit"),
+    (0x0080, "ZERO_DATA", True,
+     "all axes reading exact zero -- SENSOR COMMS FAILURE, check MISO"),
 )
 
 DETECTION_LOST_MASK = sum(bit for bit, _, lost, _ in FAULT_BITS if lost)
