@@ -1,12 +1,13 @@
-# CTX311 register map — map version 13 (firmware rev A)
+# CTX311 register map — map version 14 (firmware rev A)
 
 Modbus RTU slave, 9600 8N1, default slave ID 71. All registers are
 holding registers (function 3 to read, 6 or 16 to write).
 
-**Read register 43 on connect.** It carries the map version, now **13**
+**Read register 43 on connect.** It carries the map version, now **14**
 (9 added the loss-of-support block, 10 tilt in 64–68, 11 supply
 monitoring in 69–70, 12 the low-supply advisory in 71–72, 13 the
-sensor-communication fault in register 61 bit 7). A
+sensor-communication fault in register 61 bit 7, 14 the sensor
+re-initialisation count in register 73). A
 CTX310 master expecting version 8 must refuse to ingest — and CTX311 changes
 more than the map, so this check matters more than it did before.
 
@@ -83,7 +84,7 @@ commissioning question about whether a reset can occur under load.
 |---|---|
 | Impact threshold floor raised 10 → **1200 mg** | An existing config below 1200 mg is rejected into defaults on first boot. Check register 22 after upgrading |
 | Status register 25 **bit 2 removed** | Dashboards keying on it must be updated. It re-latched within seconds of any clear, so it was a permanent fault light for normal polling. Register 26 remains the counter |
-| Registers 49–72 added | Response is now 151 bytes for a full sweep; library `BUFFER_SIZE` raised 128 → 160, leaving **9 bytes spare** |
+| Registers 49–73 added | Response is now 153 bytes for a full sweep; library `BUFFER_SIZE` raised 128 → 160, leaving **7 bytes spare** |
 | Watchdog **enabled** | A hung device now resets instead of holding the output wherever it was. Register 29 will show WDRF and register 61 will latch `FAULT_WDT_RESET` |
 | EEPROM offsets 0–6 unchanged | Slave ID and impact threshold survive the upgrade, as they did across G→H |
 
@@ -144,7 +145,7 @@ only — see `docs/RESOURCE_BUDGET.md`. If a device in the field reads
 non-zero at register 48, it is running a debug build and should be
 reflashed with a release image.
 
-## New registers (49–72)
+## New registers (49–73)
 
 | Reg | Name | Access | Units / notes |
 |---|---|---|---|
@@ -172,6 +173,7 @@ reflashed with a release image.
 | 70 | **Supply minimum** | R | mV, lowest since boot or `CLEAR_DIAG`. The sag catcher |
 | 71 | Low-supply limit | **R/W** | mV, 3000–5500, **0 = disabled**. Default 4500 |
 | 72 | Low-supply limit effective | R | echo of 71 |
+| 73 | **ADXL345 re-initialisations** | R | Count of times the part was found restarted and reconfigured. **Should be 0** — see below |
 
 ### Register 56 is the one to trend
 
@@ -371,6 +373,62 @@ tools/ctx311_client.py --port /dev/ttyUSB0 supply-limit 4300
 whose reference reads low enough to alarm on a perfectly good rail.
 Registers 69 and 70 keep working either way, so you lose the alarm, not
 the data.
+
+## Register 73 — the sensor restarted under a running controller
+
+**A healthy unit reads 0 here for its whole life.** Any other value means
+the ADXL345 was found in its power-on state while the controller kept
+running, and was reconfigured in place.
+
+### Why this exists
+
+The ADXL345 is configured once, in `setup()`. A part that arrives *after*
+that — connected to a live controller, or restarted by a dip on its own
+supply rail — comes up in its power-on defaults: **standby mode, ±2 g,
+100 Hz, every interrupt disabled**. It never asserts DATA_READY, so the
+ISR never runs and the readings sit **flat at whatever they last were**
+until the controller is power-cycled. That is the observed field symptom,
+and power-cycling was the only cure.
+
+The device was never *wrong* about its state — `isrCount` goes to zero,
+`FAULT_RATE` is raised within ~1.25 s and the arrest engages. What it
+could not do was recover.
+
+### What it does now
+
+On each 1 Hz tick, **and only while the measured sample rate is out of
+band**, the firmware reads two ADXL345 registers:
+
+| Read | If | Then |
+|---|---|---|
+| `DEVID` (0x00) | ≠ `0xE5` | No part is answering — no sensor, cut CS, dead SCLK. Nothing is written and register 73 does not move |
+| `POWER_CTL` (0x2D) | MEASURE bit **clear** | The part restarted into standby. Reconfigure, **and count it in register 73** |
+| `POWER_CTL` (0x2D) | MEASURE bit **set** | The part is running; the missing samples are an INT1 or wiring problem. Config is re-applied anyway — cheap, and it covers a corrupted `INT_ENABLE` — but register 73 does **not** move |
+
+That split keeps register 73 meaning "the part restarted under us"
+rather than "something was wrong once".
+
+The reads and the reconfiguration run with interrupts disabled, because
+SPI is not reentrant and the ISR uses it. The block costs at most one
+sample period, and it only runs when samples are not arriving anyway.
+
+### What it deliberately does not do
+
+**Recovery does not clear faults, release the arrest, or re-arm
+anything.** Restoring the sample stream is not the same as deciding the
+assembly is safe. The fault flags stay latched, PC1 stays engaged, and
+the operator still has to send `CLEAR_FAULTS` and then `CLEAR_LOS` —
+which still refuses while a detection-lost fault stands. A protective
+function that silently re-armed itself after its sensor vanished would
+be worse than one that stayed latched.
+
+### Reading it
+
+Register 73 non-zero after a job is a **maintenance finding, not an
+event**: the sensor's supply or its connector is intermittent. Pair it
+with register 70 (lowest supply seen) — if the controller rail sagged at
+the same time, the whole assembly browned out rather than just the
+sensor.
 
 ## Fault flags (register 61)
 

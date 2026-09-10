@@ -40,6 +40,10 @@ HardwareSerial Serial;
 EEPROMClass    EEPROM;
 SPIClass       SPI;
 AdxlFeed       adxlFeed = {0, 0, 256};
+int            adxlConfigureCount = 0;
+/* Stand-in ADXL345 register file behind the SPI stub. Defaults to a
+   part that is present (DEVID 0xE5) and in MEASURE mode. */
+uint8_t        spiRegs[64] = {0};
 
 /* ---- the half of SimpleModbusSlave the sketch calls into ---- */
 unsigned int modbus_update() { return 0; }
@@ -276,8 +280,9 @@ static void test_identification_registers()
      a master must acknowledge it, so the version moves. */
   /* 12 -> 13: FAULT_ZERO_DATA occupies reg 61 bit 7. A map-12 master
      decodes that register bit by bit and has no case for bit 7, so it
-     would read a dead sensor bus as no fault at all. */
-  CHECK_EQ(holdingRegs[MapVersionReg], 13, "reg 43 map version");
+     would read a dead sensor bus as no fault at all.
+     13 -> 14: register 73 appended. */
+  CHECK_EQ(holdingRegs[MapVersionReg], 14, "reg 43 map version");
   CHECK_EQ(holdingRegs[FwVersionReg], (2 << 8) | 0, "reg 42 firmware version");
   CHECK(holdingRegs[BuildDateReg] != 0, "reg 44 build date is populated");
 
@@ -866,6 +871,108 @@ static void test_real_fall_is_still_an_event()
   runDiagnostics(1589);
   CHECK(!(faultFlags & FAULT_ZERO_DATA), "and none published");
   CHECK(!(faultFlags & FAULT_STUCK), "nor a stuck fault");
+}
+
+/* ------------------------------------------------------------------
+   Sensor re-initialisation. The failure: the ADXL345 is configured once
+   in setup(), so a part that arrives later -- connected to a live
+   controller, or restarted by a dip on its own rail -- sits in its
+   power-on defaults (standby, interrupts disabled), never asserts
+   DATA_READY, and the readings stay flat until the controller is
+   power-cycled. Observed on site.
+   ------------------------------------------------------------------ */
+
+static void test_unconfigured_sensor_is_reinitialised()
+{
+  printf("RECOVERY: a part that arrived after boot gets configured\n");
+  armed();
+  faultFlags = 0;
+  sensorReinitCount = 0;
+  spiRegs[0x00] = 0xE5;                 /* present and answering */
+  spiRegs[0x2D] = 0x00;                 /* but back in STANDBY */
+  adxlConfigureCount = 0;
+
+  /* No samples arriving -- exactly what an unconfigured part looks
+     like from here. */
+  runDiagnostics(0);
+  recoverSensorIfUnconfigured();
+
+  CHECK(adxlConfigureCount > 0, "the part is reconfigured");
+  CHECK_EQ(sensorReinitCount, 1, "and register 73 counts it");
+  CHECK(faultFlags & FAULT_RATE, "the rate fault still stands");
+  CHECK(losLatched, "and the arrest stays engaged");
+}
+
+static void test_absent_sensor_is_not_counted()
+{
+  printf("RECOVERY: nothing to configure when DEVID does not answer\n");
+  armed();
+  faultFlags = 0;
+  sensorReinitCount = 0;
+  spiRegs[0x00] = 0x00;                 /* undriven bus, no part */
+  adxlConfigureCount = 0;
+
+  recoverSensorIfUnconfigured();
+
+  CHECK_EQ(adxlConfigureCount, 0, "no registers written into the dark");
+  CHECK_EQ(sensorReinitCount, 0,
+           "and register 73 is not inflated into a lie");
+
+  spiRegs[0x00] = 0xE5;
+}
+
+static void test_running_part_is_not_counted_as_a_restart()
+{
+  printf("RECOVERY: an INT1 fault is not counted as a sensor restart\n");
+  armed();
+  faultFlags = 0;
+  sensorReinitCount = 0;
+  spiRegs[0x00] = 0xE5;                 /* part present ... */
+  spiRegs[0x2D] = 0x08;                 /* ... and already in MEASURE */
+  adxlConfigureCount = 0;
+
+  recoverSensorIfUnconfigured();
+
+  CHECK(adxlConfigureCount > 0,
+        "config is still re-applied, in case INT_ENABLE was corrupted");
+  CHECK_EQ(sensorReinitCount, 0,
+           "but reg 73 counts restarts, not every INT1 fault");
+}
+
+static void test_recovery_does_not_rearm_the_arrest()
+{
+  printf("RECOVERY: restoring the sample stream does not re-arm\n");
+  armed();
+  faultFlags = 0;
+  sensorReinitCount = 0;
+  spiRegs[0x00] = 0xE5;
+  spiRegs[0x2D] = 0x00;
+
+  /* Sensor vanishes: rate fault, arrest engaged. */
+  runDiagnostics(0);
+  CHECK(losLatched, "arrest engaged on the rate fault");
+  CHECK_EQ(losByFault, 1, "attributed to a fault");
+
+  /* Sensor comes back and is reconfigured. */
+  recoverSensorIfUnconfigured();
+  CHECK_EQ(sensorReinitCount, 1, "recovery happened");
+
+  /* Samples flow again and the rate is healthy. */
+  feedLive(256, 100);
+  runDiagnostics(1589);
+
+  CHECK(losLatched, "the arrest is STILL engaged");
+  CHECK(!(PORTC & (1 << LOS_PORT_BIT)), "output still low");
+  CHECK(faultFlags & FAULT_RATE,
+        "and the fault is still latched -- it does not self-clear");
+
+  /* Only a deliberate operator sequence clears it, in that order. */
+  holdingRegs[CommandReg] = CMD_CLEAR_FAULTS;
+  checkCommandRegister();
+  holdingRegs[CommandReg] = CMD_CLEAR_LOS;
+  checkCommandRegister();
+  CHECK(!losLatched, "operator clears faults, then the latch");
+  CHECK(PORTC & (1 << LOS_PORT_BIT), "arrest released only then");
 }
 
 static void test_live_data_does_not_raise_stuck()
@@ -1494,6 +1601,10 @@ int main()
   test_zero_data_blocks_rearm();
   test_frozen_los_window_is_attributed_to_a_fault();
   test_real_fall_is_still_an_event();
+  test_unconfigured_sensor_is_reinitialised();
+  test_absent_sensor_is_not_counted();
+  test_running_part_is_not_counted_as_a_restart();
+  test_recovery_does_not_rearm_the_arrest();
   test_live_data_does_not_raise_stuck();
   test_advisory_faults_do_not_engage_the_arrest();
   test_plausibility_suspended_during_an_event();

@@ -514,6 +514,41 @@ interrupt storm; it does nothing about the supply and ground transients
 of connecting a part to a running board. **Power down to connect the
 sensor.**
 
+### Readings go flat when the sensor is connected to a live controller
+
+Different failure, different cause. The ADXL345 is configured once, in
+`setup()`. A part connected **after** the controller has booted comes up
+in its power-on defaults — **standby mode, ±2 g, 100 Hz, all interrupts
+disabled** — so it never asserts DATA_READY. The ISR never runs and
+registers 0–2 sit **flat at whatever they last were**. Power-cycling the
+controller re-runs `setup()`, which is why that fixed it.
+
+The device is not wrong about its state while this is happening:
+register 27 reads 0, `FAULT_RATE` (`0x01`) is up in register 61 within
+~1.25 s, and the arrest is engaged. Check those before assuming the
+sensor is dead.
+
+**Firmware now recovers it.** Once a second, while the sample rate is
+out of band, the controller reads `DEVID` and `POWER_CTL` over SPI. If
+the part answers `0xE5` and its MEASURE bit is clear, it has restarted
+and gets reconfigured in place. **Register 73 counts that.**
+
+| Reg 73 | Reg 61 | Meaning |
+|---|---|---|
+| 0 | 0 | Normal. This is what a healthy unit reads for its whole life |
+| increments | `0x01` then clears after `CLEAR_FAULTS` | The sensor restarted and was recovered. **Maintenance finding — intermittent sensor supply or connector** |
+| stays 0 | `0x01` persists | Nothing answering on SPI, or INT1 is not getting through. Recovery cannot help; check the wiring |
+
+**Recovery restores the sample stream. It does not re-arm anything.**
+Faults stay latched and the arrest stays engaged until an operator sends
+`CLEAR_FAULTS` and then `CLEAR_LOS`, in that order. That is deliberate —
+a protective function that silently re-armed itself after its sensor
+vanished would be worse than one that stayed latched.
+
+**This is a recovery path, not a licence to hot-plug.** It does nothing
+about the supply and ground transients of connecting a part to a running
+board. Power down to connect the sensor.
+
 ### Ways to restart the controller
 
 | Method | Reaches a frozen device? | Notes |

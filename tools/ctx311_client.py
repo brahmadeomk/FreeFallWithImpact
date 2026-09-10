@@ -36,8 +36,8 @@ import math
 import sys
 import time
 
-EXPECTED_MAP_VERSION = 13
-REGISTER_COUNT = 73
+EXPECTED_MAP_VERSION = 14
+REGISTER_COUNT = 74
 
 # register indices used by name
 SLAVE_ID = 21
@@ -80,6 +80,7 @@ VCC_INVALID = 0xFFFF
 
 SUPPLY_MIN = 71         # R/W advisory limit, mV, 0 = disabled
 SUPPLY_MIN_EFF = 72
+SENSOR_REINIT = 73      # times the ADXL345 has been re-initialised
 
 # Register 65 bits.
 TILT_STATUS_BITS = (
@@ -193,6 +194,7 @@ NAMES = {
     69: "supply now (mV)", 70: "supply minimum (mV)",
     71: "supply advisory limit (mV, 0=off) [R/W]",
     72: "supply limit effective (mV)",
+    73: "ADXL345 re-initialisations (should be 0)",
 }
 
 

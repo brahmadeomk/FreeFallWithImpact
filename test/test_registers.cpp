@@ -34,6 +34,10 @@ HardwareSerial Serial;
 EEPROMClass    EEPROM;
 SPIClass       SPI;
 AdxlFeed       adxlFeed = {0, 0, 256};
+/* Unused by CTX310 rev H, which never re-initialises the part -- but the
+   shared stubs reference them, so they need storage here too. */
+int            adxlConfigureCount = 0;
+uint8_t        spiRegs[64] = {0};
 
 /* ---- the half of SimpleModbusSlave the sketch calls into ---- */
 unsigned int modbus_update() { return 0; }

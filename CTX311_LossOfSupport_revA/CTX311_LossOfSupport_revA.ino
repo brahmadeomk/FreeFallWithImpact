@@ -543,6 +543,23 @@
 #define BOOT_PASS     1
 #define BOOT_FAIL     2
 
+/* DEVID is read-only and fixed at 0xE5 on every ADXL345. It is the only
+   way to tell "the part is there and answering" from "the bus is
+   returning whatever an undriven line returns". */
+#define ADXL345_DEVID_VALUE  0xE5
+
+/* MEASURE, POWER_CTL bit D3. Clear means STANDBY -- the state an
+   ADXL345 powers up in, and the reason a part that restarts under a
+   running controller never asserts DATA_READY again. */
+#define ADXL345_MEASURE_BIT  0x08
+
+#ifndef ADXL345_DEVID        /* the official driver defines these; the host stub does not */
+#define ADXL345_DEVID        0x00
+#endif
+#ifndef ADXL345_POWER_CTL
+#define ADXL345_POWER_CTL    0x2D
+#endif
+
 #ifndef ADXL345_INT_DATA_READY_BIT   /* the official driver defines it; the host stub does not */
 #define ADXL345_INT_DATA_READY_BIT 7
 #endif
@@ -667,6 +684,10 @@
        9..12 = CTX311 rev A -- loss-of-support registers, arming
                    window, tilt, supply monitoring. Tabulated in
                    docs/REGISTER_MAP_CTX311.md rather than here.
+      14 = +reg 73, count of ADXL345 re-initialisations. Appended, so
+                   a map-13 master cannot misread what it already reads,
+                   but the sweep grows by one register and the version
+                   must move with it.
       13 = +FAULT_ZERO_DATA (reg 61 bit 7). A master built for map 12
                    decodes reg 61 bit by bit and has no case for bit 7,
                    so it would report a dead sensor bus as no fault at
@@ -679,7 +700,7 @@
 #define FW_VERSION_MAJOR      2
 #define FW_VERSION_MINOR      0          /* CTX311 revision A */
 #define FW_VERSION_PACKED     (((FW_VERSION_MAJOR) << 8) | (FW_VERSION_MINOR))
-#define REGISTER_MAP_VERSION  13
+#define REGISTER_MAP_VERSION  14
 
 #define BUILD_YEAR  ((__DATE__[7]-'0')*1000 + (__DATE__[8]-'0')*100 + \
                      (__DATE__[9]-'0')*10   + (__DATE__[10]-'0'))
@@ -817,6 +838,11 @@ enum
   SupplyMinReg,        /* 71 R/W SETTING low-supply advisory limit,
                               mV, 3000..5500, 0 = disabled. Def 4500  */
   SupplyMinEffReg,     /* 72 echo of 71                              */
+  /* ---- map version 14 ---- */
+  SensorReinitReg,     /* 73 times the ADXL345 has been found
+                              unconfigured and re-initialised. Should
+                              be 0. Non-zero means the part restarted
+                              under a running controller.             */
   HOLDING_REGS_SIZE
 };
 
@@ -916,6 +942,7 @@ volatile uint16_t isrCount     = 0;
 static   uint32_t maxLoopUs    = 0;    /* uint32: a full read is ~104 ms */
 static   uint16_t faultFlags   = 0;
 static   uint8_t  bootState    = BOOT_PENDING;
+static   uint16_t sensorReinitCount = 0;   /* published in reg 73 */
 static   uint16_t bootSamples  = 0;
 static   unsigned long implausibleSinceMs = 0;
 static   uint8_t  implausibleRunning = 0;
@@ -1866,6 +1893,108 @@ static void runDiagnostics(uint16_t measuredRate)
   }
 }
 
+/* ==================================================================== */
+/*  sensor re-initialisation                                            */
+/* ==================================================================== */
+/* The ADXL345 is configured ONCE, in setup(). A part that arrives after
+   that -- connected to a live controller, or restarted by a dip on its
+   own supply rail -- comes up in its power-on defaults: STANDBY mode,
+   +/-2 g, 100 Hz, and every interrupt disabled. It never asserts
+   DATA_READY, so myHandler() never runs and the readings sit flat at
+   whatever they last were until the controller is power-cycled.
+   Observed on site, and the reason this exists.
+
+   The device was never WRONG about its state: isrCount goes to zero,
+   FAULT_RATE is raised in ~1.25 s and the arrest engages. What it could
+   not do was recover.
+
+   applySensorConfig() is the exact sequence setup() uses. Keep the two
+   identical -- a recovery that configures the part differently from a
+   cold boot would give a unit two behaviours depending on its
+   history. */
+static void applySensorConfig()
+{
+  adxl.powerOn();
+  adxl.setRangeSetting(16);
+  adxl.setSpiBit(0);
+  adxl.set_bw(ADXL345_BW_800);
+  adxl.setFullResBit(1);
+  adxl.setInterrupt(ADXL345_INT_DATA_READY_BIT, true);
+  adxl.setInterruptMapping(ADXL345_INT_DATA_READY_BIT, ADXL345_INT1_PIN);
+  adxl.getInterruptSource();               /* clear any stale latch */
+}
+
+/* Single-register read, done here rather than through the driver: the
+   SparkFun library keeps readFrom() private and the vendored copy is
+   unmodified on purpose (see vendor/PROVENANCE.md). The framing is two
+   bytes -- address with the MSB set for a read and bit 6 clear for a
+   single byte, then a dummy byte to clock the value back. Mode and
+   clock divider are whatever setup() left configured, which is what
+   the ISR uses too. */
+static uint8_t adxlReadReg(uint8_t reg)
+{
+  digitalWrite(ADXL_CS_PIN, LOW);
+  SPI.transfer(0x80 | reg);
+  uint8_t v = SPI.transfer(0x00);
+  digitalWrite(ADXL_CS_PIN, HIGH);
+  return v;
+}
+
+/* Called from the 1 Hz tick when no usable sample stream is arriving.
+
+   Gated on the LIVE measured rate, not on faultFlags. faultFlags is
+   sticky until CLEAR_FAULTS, so gating on it would rewrite the part's
+   configuration once a second for ever after the first fault of the
+   unit's life. An out-of-band rate is the symptom itself and clears
+   itself the moment samples return.
+
+   Two reads, and they mean different things:
+
+   DEVID must be 0xE5. If it is not, there is no part answering -- no
+   sensor, cut CS, dead SCLK -- and there is nothing to configure.
+   Writing registers into the dark would turn register 73 into a lie.
+
+   POWER_CTL's MEASURE bit is the actual signature of the failure this
+   exists for. An ADXL345 that has restarted comes up in STANDBY with
+   that bit clear, which is why it never asserts DATA_READY. If DEVID
+   answers and MEASURE is already set, the part is running and the
+   missing samples are an INT1 or wiring problem that re-initialising
+   cannot fix. The configuration is still re-applied -- it is cheap and
+   it covers a corrupted INT_ENABLE or INT_MAP -- but register 73 is
+   NOT incremented, so it stays a count of "the part restarted under
+   us" rather than a count of every INT1 fault.
+
+   INTERRUPTS OFF for the whole thing. SPI is not reentrant and
+   myHandler() uses it: an interleaved readAccel() would corrupt both
+   transfers and could hand the detector a garbage sample. The block is
+   a few hundred microseconds, so it costs at most one sample period --
+   and it only runs when samples are not arriving anyway.
+
+   What this deliberately does NOT do: clear faultFlags, release the
+   arrest, or re-arm anything. Recovering the sample stream is not the
+   same as deciding the assembly is safe. The operator still has to
+   CLEAR_FAULTS and then CLEAR_LOS, and CLEAR_LOS still refuses while
+   the channel is faulted. A protective function that silently re-armed
+   itself after its sensor vanished would be worse than one that stayed
+   latched. */
+static void recoverSensorIfUnconfigured()
+{
+  uint8_t devid = 0, powerCtl = 0;
+
+  ATOMIC_BLOCK(ATOMIC_RESTORESTATE) {
+    devid = adxlReadReg(ADXL345_DEVID);
+    if (devid == ADXL345_DEVID_VALUE) {
+      powerCtl = adxlReadReg(ADXL345_POWER_CTL);
+      applySensorConfig();
+    }
+  }
+
+  if (devid == ADXL345_DEVID_VALUE &&
+      !(powerCtl & ADXL345_MEASURE_BIT) &&
+      sensorReinitCount < 0xFFFFU)
+    sensorReinitCount++;
+}
+
 /* Boot check. Runs during the SETTLE window, before the detector is
    armed, so it cannot disturb a live protective function.
 
@@ -2484,6 +2613,7 @@ static void publishBlock()
   holdingRegs[RawMagReg]          = countsToMg(isqrt32(rawLive));
   holdingRegs[FaultReg]           = faultFlags;
   holdingRegs[BootCheckReg]       = bootState;
+  holdingRegs[SensorReinitReg]    = sensorReinitCount;
 
   {
     uint8_t ts = 0;
@@ -2643,19 +2773,15 @@ void setup()
   SPI.setClockDivider(SPI_CLOCK_DIV4);      /* 4 MHz; >=2 MHz required
                                                at 1600 Hz, max 5 MHz  */
 
-  adxl.powerOn();
-  adxl.setRangeSetting(16);                 /* headroom above the
-                                               +/-15 g spec figure    */
-  adxl.setSpiBit(0);                        /* 4-wire SPI */
-  adxl.set_bw(ADXL345_BW_800);              /* 1600 Hz ODR -> 800 Hz BW,
-                                               matching the datasheet */
-  adxl.setFullResBit(1);                    /* 3.9 mg/LSB (LSB pinned
-                                               to 0 at this ODR ->
-                                               7.8 mg step)           */
+  /* Range +/-16 g for headroom above the +/-15 g spec figure; 1600 Hz
+     ODR against an 800 Hz bandwidth, as the datasheet pairs them;
+     full-res so the scale factor stays 3.9 mg/LSB (the LSB is pinned to
+     0 at this ODR, giving a 7.8 mg step); DATA_READY mapped to INT1.
 
-  adxl.setInterrupt(ADXL345_INT_DATA_READY_BIT, true);
-  adxl.setInterruptMapping(ADXL345_INT_DATA_READY_BIT, ADXL345_INT1_PIN);
-  adxl.getInterruptSource();                /* clear stale latch once */
+     Shared with recoverSensorIfUnconfigured() on purpose -- a part
+     re-initialised in the field must end up configured exactly as a
+     cold boot leaves it. */
+  applySensorConfig();
 
   /* INPUT_PULLUP, not INPUT. With no sensor on the other end a bare
      INPUT floats, and a floating CMOS input does not sit still -- it
@@ -2735,7 +2861,16 @@ void loop()
        the one that catches a dead sensor -- needs exactly this
        measurement. Worst-case detection of a dead part is therefore
        ~1 s, which is the figure to quote, not "immediate".        */
-    runDiagnostics((rate > 65535UL) ? 65535U : (uint16_t)rate);
+    uint16_t r16 = (rate > 65535UL) ? 65535U : (uint16_t)rate;
+    runDiagnostics(r16);
+
+    /* No usable sample stream. Most often this is a dead part or a
+       detached INT1, which nothing here can fix -- but it is also what
+       a live-connected or brown-out-reset ADXL345 looks like, and that
+       one recovers. Cheap to try, once a second, only while broken. */
+    if (r16 < RATE_MIN_HZ || r16 > RATE_MAX_HZ) {
+      recoverSensorIfUnconfigured();
+    }
   }
 
   modbus_update();
