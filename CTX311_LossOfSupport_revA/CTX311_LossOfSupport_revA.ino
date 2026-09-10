@@ -476,12 +476,23 @@
    (5 ms, 8 samples), and is not asked to -- below the zero limit the
    trip instant is attributed instead. See the LOS block.
 
-   False-positive cost of 16: exact zeros on all three axes cannot
-   happen at rest, because gravity puts ~256 counts somewhere. Only
-   free fall gets close, and there the part's own noise dithers by
-   several LSB -- assume a pessimistic 1 LSB and 16 consecutive
-   all-zero triples still come out around 1e-19. The limit is set by
-   how fast this must be, not by how sure.                          */
+   False-positive cost of 16, computed from the MEASURED noise floor:
+   registers 0-2 read ~7 mg per axis at rest on a real unit, and at
+   this configuration the quantisation step is 7.8 mg. A single axis
+   therefore lands in the zero bin about 42 % of the time when the
+   true value is zero, all three at once about 7.6 %, and sixteen
+   consecutive all-zero triples about 1e-18. At 1589 Hz that is one
+   false trip per ~1.8e7 years OF CONTINUOUS FREE FALL, which is the
+   only condition where it can arise at all -- at rest gravity puts
+   ~256 counts on some axis and the probability is flatly zero.
+
+   Real free fall is safer still than that figure: the part's 0 g
+   offset is tens of mg, so the samples are not centred on the zero
+   bin at all.
+
+   16 is not arbitrary. 8 samples would give ~1e-9, which is fine but
+   thin for a protective function; 16 buys nine more orders of
+   magnitude for 5 ms.                                              */
 #define ZERO_DATA_LIMIT      16U       /* ~10 ms of exact 0,0,0 */
 #define RATE_MIN_HZ          1200U
 #define RATE_MAX_HZ          2000U

@@ -405,13 +405,46 @@ Two checks close that:
    **10 ms**. Raises the fault and engages the arrest as a fault
    (register 49 bit 5 **set**). Exact zeros are impossible on a live
    part: at rest gravity puts ~256 counts on some axis, and in free fall
-   the part's own noise dithers by several LSB.
+   the part's own noise dithers.
 2. **Trip-instant attribution** — when the loss-of-support path latches,
    if the *entire* confirm window was bit-identical, the trip is
    attributed to a fault and `STUCK` (bit 1) is raised immediately
    rather than a second later. This catches the other frozen patterns —
    an open MISO pulled high reads −1,−1,−1, about 7 mg — and works at
    any threshold and confirm-time setting.
+
+#### The noise floor is what makes both checks safe
+
+Registers 0–2 (per-axis AC-coupled RMS) read about **7 mg** each at rest
+on a real unit. That is the ADXL345's own noise, and it is the evidence
+these checks rest on — a live part is never still, even when the
+assembly is.
+
+With that 7 mg against a 7.8 mg quantisation step, and taking the worst
+case where a genuine free fall centres every axis exactly on zero:
+
+| Run length | Odds of a false ZERO_DATA trip |
+|---|---|
+| 8 samples (5 ms) | ~1e-9 |
+| **16 samples (10 ms)** — the setting | **~1e-18** |
+| 32 samples (20 ms) | ~1e-36 |
+
+At 1589 Hz, 16 samples works out to one false trip per ~1.8 × 10⁷ years
+*of continuous free fall*, and free fall is the only condition where it
+can arise — at rest gravity puts ~256 counts on some axis and the
+probability is flatly zero. Real drops are safer still, because the
+part's 0 g offset is tens of mg, so the samples are not centred on the
+zero bin at all.
+
+The trip-instant attribution is stronger again: the odds of a live part
+producing bit-identical samples across a whole 50 ms confirm window are
+around 1e-124.
+
+**Watching registers 0–2 from the master is a useful cross-check.** If
+all three collapse to 0 and stay there, the data path is frozen. It
+lags — the DC tracker has a 1.28 s time constant — so it is for logging
+and troubleshooting, not protection; the firmware checks above are
+~100× faster.
 
 **The output is the same either way: the arrest engages.** What changes
 is the reason reported, and whether `CLEAR_LOS` will re-arm. The live
