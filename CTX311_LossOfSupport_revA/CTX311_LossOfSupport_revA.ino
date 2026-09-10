@@ -2657,7 +2657,32 @@ void setup()
   adxl.setInterruptMapping(ADXL345_INT_DATA_READY_BIT, ADXL345_INT1_PIN);
   adxl.getInterruptSource();                /* clear stale latch once */
 
-  pinMode(ADXL_INT1_PIN, INPUT);
+  /* INPUT_PULLUP, not INPUT. With no sensor on the other end a bare
+     INPUT floats, and a floating CMOS input does not sit still -- it
+     chatters. Every chatter edge is a rising edge on INT1, and every
+     rising edge runs myHandler() for ~166 us. Arrive faster than that
+     and loop() never gets the CPU: wdt_reset() is never reached, the
+     500 ms watchdog fires, and because the watchdog stays armed across
+     a reset the board can come straight back into the same storm. From
+     the bus that is indistinguishable from a dead controller, and it
+     is the failure seen when a sensor is connected on a live unit.
+
+     It also closed a diagnostic hole. Chatter can land inside
+     RATE_MIN_HZ..RATE_MAX_HZ by luck, so a DISCONNECTED sensor could
+     produce a plausible-looking sample rate and no FAULT_RATE at all.
+     Held high, INT1 has no rising edges, isrCount goes to zero, and
+     the rate check reports it in ~1.25 s as it should.
+
+     The ADXL345 drives INT1 push-pull, so a 20-50 kOhm internal
+     pull-up does not fight it. Idle is LOW with INT_INVERT clear, so
+     connecting a live part produces one falling edge -- no ISR -- and
+     then normal DATA_READY pulses.
+
+     This does NOT make hot-plugging safe. It removes the interrupt
+     storm; it does nothing about the supply and ground transients of
+     connecting a part to a running board. Power down to connect the
+     sensor. */
+  pinMode(ADXL_INT1_PIN, INPUT_PULLUP);
   attachInterrupt(digitalPinToInterrupt(ADXL_INT1_PIN), myHandler, RISING);
 
   /* Rev H included <avr/wdt.h> and then called wdt_disable(), so a

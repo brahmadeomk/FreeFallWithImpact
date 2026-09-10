@@ -41,6 +41,7 @@ inline unsigned long micros() { return g_micros; }
 /* ---- pins / interrupts ---- */
 #define INPUT  0
 #define OUTPUT 1
+#define INPUT_PULLUP 2
 #define RISING 3
 inline void pinMode(uint8_t, uint8_t) {}
 inline int  digitalPinToInterrupt(int pin) { return pin; }

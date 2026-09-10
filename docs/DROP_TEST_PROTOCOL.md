@@ -450,6 +450,89 @@ Always reads back 0. Confirm through registers 45–47, never by reading 28.
 
 ---
 
+## Troubleshooting — the device stops responding
+
+### It should recover on its own in 500 ms
+
+A 500 ms watchdog is enabled at the end of `setup()`, and `wdt_reset()`
+is the first statement in `loop()`. Anything that stops `loop()` running
+therefore resets the controller within half a second. **If a freeze
+lasts longer than that, the watchdog path itself is broken** — that is
+the thing to investigate, not the hang.
+
+After any suspected freeze, power-cycle and read:
+
+| Register | What it tells you |
+|---|---|
+| 61 bit 5 (`0x20`) | `WDT_RESET` — the watchdog fired. Sticky until `CLEAR_FAULTS` |
+| 29 | Raw `MCUSR`. Bit 3 (`0x08`) = WDRF, bit 0 (`0x01`) = PORF (power-on) |
+
+### Why a freeze can outlast the watchdog
+
+**The AVR watchdog stays armed across a reset.** After it fires, the MCU
+restarts into the *bootloader* with the watchdog still running at
+500 ms. What happens next depends on which bootloader the Nano has:
+
+- **Optiboot ("new bootloader")** — reads `MCUSR`, sees WDRF and jumps
+  straight to the sketch. Recovers cleanly. **But it clears `MCUSR`
+  first**, so register 29 reads **0** and `FAULT_WDT_RESET` never
+  latches. If reg 29 reads 0 after a reset you know was a watchdog
+  reset, this is why — reg 29 is not trustworthy on that bootloader.
+- **The old bootloader** (Nanos are still shipped with it; the IDE lists
+  it as "ATmega328P (Old Bootloader)") — waits ~2 s for a programmer
+  before starting the sketch. The 500 ms watchdog fires *during that
+  wait*, resetting the board again, forever. **The board appears
+  permanently dead and only a power cycle clears it.** This is the
+  classic "watchdog bricks the Nano" failure and it matches a freeze
+  that will not clear on its own.
+
+**Telling them apart in the field:** watch the Nano's on-board LED
+(pin 13). The bootloader flashes it at every start, so a reset loop is a
+repeating blink. A genuine hang is a steady or dark LED.
+
+**If it is the old bootloader, reflash with Optiboot.** Do not shorten
+or remove the watchdog to work around it — the watchdog is what stops a
+hang leaving the arrest output wherever it happened to be.
+
+### Freezing while connecting the sensor
+
+This had a specific cause and it is fixed in firmware. `INT1` (D2) was
+configured `INPUT` with no pull-up. With no sensor attached the pin
+floats, and a floating CMOS input chatters. Every chatter edge is a
+rising edge, every rising edge runs the ISR for ~166 µs, and once edges
+arrive faster than that `loop()` never gets the CPU — so `wdt_reset()`
+is never reached and the watchdog fires. On the old bootloader that is
+the reset loop above.
+
+It is now `INPUT_PULLUP`, which holds INT1 high when nothing is driving
+it. No rising edges, no storm, and a disconnected sensor is reported
+properly as `FAULT_RATE` within ~1.25 s. (Previously the chatter could
+land inside the 1200–2000 Hz band by luck and show *no* fault at all.)
+
+**The pull-up does not make hot-plugging safe.** It removes the
+interrupt storm; it does nothing about the supply and ground transients
+of connecting a part to a running board. **Power down to connect the
+sensor.**
+
+### Ways to restart the controller
+
+| Method | Reaches a frozen device? | Notes |
+|---|---|---|
+| Watchdog (automatic) | **yes** | 500 ms. Already enabled; this is the intended mechanism |
+| Power cycle | **yes** | Clears a bootloader reset loop, which nothing else will |
+| Pull the Nano `RESET` pin low | **yes** | ~10 µs to GND. A spare PLC output through a transistor works; this is the option to wire if you want remote recovery |
+| A Modbus reset command | **no** | A frozen controller is not answering Modbus, so this cannot solve the problem it looks like it solves |
+
+**On a Modbus reset command specifically:** it is not implemented, and
+it should not be added casually. `setup()` drives PC1 **high — arrest
+released** — and then enters the ~2 s arming window with health open. A
+reset command would therefore be a way to release a latched arrest and
+leave the assembly unprotected for two seconds, from the bus, without
+going through `CLEAR_LOS` — which exists precisely to refuse that while
+a detection-lost fault stands. If you want one, it needs to be gated at
+least as tightly as `CLEAR_LOS`, and that is a decision to take
+deliberately.
+
 ## Before the first drop — H-01 must be closed
 
 **Do not connect a real arrest device until H-01 is confirmed.** On loss
