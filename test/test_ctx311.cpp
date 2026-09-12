@@ -283,7 +283,7 @@ static void test_identification_registers()
      would read a dead sensor bus as no fault at all.
      13 -> 14: register 73 appended. */
   CHECK_EQ(holdingRegs[MapVersionReg], 14, "reg 43 map version");
-  CHECK_EQ(holdingRegs[FwVersionReg], (2 << 8) | 0, "reg 42 firmware version");
+  CHECK_EQ(holdingRegs[FwVersionReg], (2 << 8) | 1, "reg 42 firmware version");
   CHECK(holdingRegs[BuildDateReg] != 0, "reg 44 build date is populated");
 
   unsigned int d = holdingRegs[BuildDateReg];

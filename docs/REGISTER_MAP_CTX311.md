@@ -11,6 +11,36 @@ re-initialisation count in register 73). A
 CTX310 master expecting version 8 must refuse to ingest — and CTX311 changes
 more than the map, so this check matters more than it did before.
 
+## Flashing an update — what actually has to change
+
+**Only `CTX311_LossOfSupport_revA/CTX311_LossOfSupport_revA.ino`.**
+
+`vendor/SparkFun_ADXL345-master/` is the official SparkFun driver and is
+**unmodified** — see `vendor/PROVENANCE.md`. Nothing in any field fix has
+touched it, and nothing is expected to: the driver keeps `readFrom()`
+private, so the sketch does its own two-byte SPI register reads rather
+than patching the vendored copy. `SimpleModbusSlave.cpp/.h` are likewise
+unchanged since rev A was first built.
+
+The only other edited files are the host test stubs under `test/stubs/`,
+which never go on the Arduino.
+
+So: keep whatever driver copy your build already uses, replace the
+`.ino`, rebuild, flash.
+
+### Confirming which image actually landed
+
+| Reg | Reads | |
+|---|---|---|
+| 42 | **0x0201 (513)** | Firmware 2.1 — the field-fix build. `0x0200` (512) is rev A as first built |
+| 43 | **14** | Register map version. Unchanged by the 2.1 fixes, and correctly so — no register changed meaning |
+| 44 | build date | Packed `(year−2000)<<9 \| month<<5 \| day`. Only separates builds made on different days |
+
+**Register 42, not 43, is the one that tells builds apart.** The map
+version deliberately does not move for a behaviour fix — bumping it would
+force every master to re-validate for nothing — so a device reading
+43 = 14 could be running either image. Read 42.
+
 ## Read this before wiring anything
 
 The CTX311 drives an **arrest / brake device**. That makes it a

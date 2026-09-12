@@ -698,7 +698,20 @@
        year = 2000 + (v >> 9);  month = (v >> 5) & 0x0F;  day = v & 0x1F
    ------------------------------------------------------------------ */
 #define FW_VERSION_MAJOR      2
-#define FW_VERSION_MINOR      0          /* CTX311 revision A */
+/* 2.0 = CTX311 rev A as first built.
+   2.1 = the field-test fixes, none of which move the register map:
+         INT1 INPUT_PULLUP so a floating interrupt line cannot starve
+         loop(); FAULT_ZERO_DATA and trip-instant attribution so a dead
+         SPI data path is not reported as a fall; sensor
+         re-initialisation, including the DATA_READY clear without which
+         a latched INT1 could never restart.
+
+   The map version does NOT move for any of that -- no register changed
+   meaning, and bumping it would force every master to re-validate for
+   nothing. But two images that behave differently must be tellable
+   apart from the bus, and register 42 is the register for it.
+   Register 44 only separates builds made on different days. */
+#define FW_VERSION_MINOR      1
 #define FW_VERSION_PACKED     (((FW_VERSION_MAJOR) << 8) | (FW_VERSION_MINOR))
 #define REGISTER_MAP_VERSION  14
 
