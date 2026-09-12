@@ -430,6 +430,37 @@ with register 70 (lowest supply seen) — if the controller rail sagged at
 the same time, the whole assembly browned out rather than just the
 sensor.
 
+## Minimum poll set for a dashboard or PLC
+
+A dashboard that shows only the vibration registers looks healthy while
+the arrest is engaged. These eleven are the set that tells you what the
+device is actually doing. The whole list is 11 reads, or one sweep.
+
+| Reg | Name | Normal | Act on |
+|---|---|---|---|
+| 43 | Map version | **14** | Anything else — refuse to ingest, the register meanings have moved |
+| 61 | **Fault flags** | 0 | Non-zero. The single most important register on the device |
+| 49 | **LOS status** | 0 | bit0 = arrest latched, bit5 = it was a fault not a fall, bit6 = still arming |
+| 27 | Sample rate | ~1589 | Outside 1200–2000 means no usable sample stream |
+| 54 | LOS trip count | steady | Any increment is an event to investigate |
+| 73 | Sensor re-inits | **0** | Non-zero = the ADXL345 restarted under the controller. Maintenance finding |
+| 70 | **Supply minimum** | ≥ 4700 mV typ. | Approaching register 71. This is the sag catcher, not register 71 |
+| 69 | Supply now | ~5000 mV | Trend it alongside 70 |
+| 60 | Raw magnitude | ~1000 mg | 0 mg or ~7 mg with a healthy rate = a dead SPI data path |
+| 51 / 53 | Threshold / confirm time in force | 850 / 50 | Silent disagreement with what you think you configured |
+| 62 | Boot check | 1 (pass) | 2 = failed |
+
+**Registers 71 and 72 are settings, not measurements.** Register 71 is
+the low-supply *limit* you configured and echoes back whatever was
+written — it will read 4500 for ever whether the rail is 5.0 V or 4.2 V.
+Polling it tells you nothing about the supply. **Registers 69 and 70 are
+the measurements.**
+
+Registers 0–2 (10 ms per-axis RMS) and 38–41 (1 s per-axis and vector
+RMS) are the vibration data. Useful, and worth baselining at
+commissioning while the machine is in a known state — but none of them
+says whether the protective function is armed.
+
 ## Fault flags (register 61)
 
 | Bit | Name | Detection lost? | Meaning |
