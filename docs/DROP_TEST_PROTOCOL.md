@@ -319,7 +319,64 @@ gives.
 | 1 | `0x01` | Event over, still latched. Needs `clear-los` |
 | 11 | `0x0B` | Latched + active + reached free-fall depth — a genuine drop |
 | 33 | `0x21` | Latched **by a fault**. Not a fall. Check register 61 |
+| **97** | `0x61` | **Latched by a fault, during the arming window.** The sensor never delivered a usable sample stream after reset. See the runbook below |
 | **8** | `0x08` | **Near miss, not an event.** Bit 3 alone: the magnitude dipped below 300 mg but never for the full confirm time, so nothing tripped. Confirm with register 54 = 0 and bit 0 clear |
+
+### Runbook — register 49 = 97, register 61 = 1, register 27 = 0
+
+This combination is a **dead sample stream after a reset**, and the
+device is doing exactly what it is designed to do. It is not a firmware
+fault.
+
+Read it in this order:
+
+| Reg | Reads | Says |
+|---|---|---|
+| 27 | **0** | No DATA_READY interrupts are arriving at all |
+| 61 | **1** | `FAULT_RATE` — the rate check caught it, within ~1.25 s |
+| 49 bit 0 | set | The arrest is **engaged** |
+| 49 bit 5 | set | Engaged **by the fault**, not by a fall. Do not log it as an event |
+| 49 bit 6 | set | Still arming — `settleCount` never advanced, because it only advances in the ISR |
+| 54 | 0 | No loss-of-support trip ever occurred. Consistent |
+
+**Bit 6 and bit 0 together mean the controller reset and the sensor
+never came back.** `settleCount` and the trip count are RAM, so both
+restart at zero; a jump in register 70 to a fresh minimum is the third
+sign of the same reset. A fault *does* engage the arrest during the
+arming window — the "arming never engages the arrest" rule is about
+events, not faults, and a device that cannot detect is not one to leave
+released.
+
+**Register 73 = 0 narrows it to two causes**, because the recovery path
+has been retrying once a second the whole time:
+
+- **Nothing is answering on SPI** — DEVID is not returning `0xE5`. Sensor
+  unpowered, or CS / SCLK / MOSI open.
+- **The part is answering and already in MEASURE mode** — so the data
+  path is fine and **INT1 (D2) is the broken link**.
+
+Either way it is wiring, and in both cases it is the connection most
+recently disturbed.
+
+**What to do:**
+
+1. **Do not send `CLEAR_FAULTS` or `CLEAR_LOS` yet.** The latched state
+   is the evidence. `CLEAR_LOS` will refuse anyway while the fault
+   stands, which is the intended behaviour.
+2. Read **register 29** before clearing anything, to see whether the
+   reset was a watchdog (bit 3, WDRF). It may read 0 on a board with the
+   Optiboot bootloader — see the freeze troubleshooting above.
+3. **Power the controller down**, check the sensor harness — supply
+   first, then INT1/D2, then CS/SCLK/MOSI/MISO — and reseat it. Never
+   connect it to a live board.
+4. Power up and confirm **register 27 ≈ 1589** and **register 49 bit 6
+   clear** within ~2 s.
+5. Only then `CLEAR_FAULTS`, then `CLEAR_LOS`, in that order. Confirm
+   register 49 returns to 0 and the arrest releases.
+
+**If register 73 starts incrementing instead**, the part is restarting
+on its own rather than being disconnected — that is a supply problem at
+the sensor, not a broken wire. Trend register 70 across a motor start.
 
 ### Bit 3 on its own is a near-miss record, and it is cumulative
 
