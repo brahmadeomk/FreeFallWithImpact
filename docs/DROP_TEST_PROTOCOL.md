@@ -319,6 +319,39 @@ gives.
 | 1 | `0x01` | Event over, still latched. Needs `clear-los` |
 | 11 | `0x0B` | Latched + active + reached free-fall depth — a genuine drop |
 | 33 | `0x21` | Latched **by a fault**. Not a fall. Check register 61 |
+| **8** | `0x08` | **Near miss, not an event.** Bit 3 alone: the magnitude dipped below 300 mg but never for the full confirm time, so nothing tripped. Confirm with register 54 = 0 and bit 0 clear |
+
+### Bit 3 on its own is a near-miss record, and it is cumulative
+
+`losMinMag2` — the source of registers 56 and 57 and of bit 3 — is
+updated on **every** sample that falls below the threshold, whether or
+not a run ever reaches the confirm time. It is **not** cleared when the
+assembly recovers; only `CLEAR_LOS` resets it.
+
+So bit 3 set with **register 54 = 0** and **bit 0 clear** does not mean
+something fell. It means that at some point since boot, or since the
+last `CLEAR_LOS`, the magnitude went deep — and the detector correctly
+did nothing, because the dip was shorter than the confirm time.
+
+That is the **margin measurement**, and it is the most useful number on
+the device for tuning:
+
+1. Read **register 56** — how deep the worst dip went, in mg. Compare
+   with register 51 (threshold in force). The gap is your margin.
+2. Read **register 55** — how long the longest run lasted, in ms.
+   Compare with register 53 (confirm time in force). That gap is the
+   other half of the margin.
+3. Send **`CLEAR_LOS`** to reset the record — it is accepted when
+   nothing is latched and no detection-lost fault stands — then run a
+   full normal cycle and read 55 and 56 again. That second reading is
+   the real operating margin, uncontaminated by installation handling.
+
+**Expect bit 3 to be set after installation.** Mounting the sensor by
+hand — lowering it onto a bracket, a sharp downward movement, setting it
+down — produces a brief near-free-fall transient that is easily below
+300 mg. It is not evidence of a problem; it is evidence the detector is
+awake. Clear it before commissioning so the record starts from the
+machine, not from the fitter.
 
 ### Register 61 — Fault flags (bitfield, read-only)
 
