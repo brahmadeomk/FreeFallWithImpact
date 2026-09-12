@@ -23,15 +23,21 @@
 #include "stubs/Arduino.h"
 #include "stubs/EEPROM.h"
 #include "stubs/SPI.h"
-#include "stubs/SparkFun_ADXL345-master/mFFT_SparkFun_ADXL345.cpp"
+#include "stubs/SparkFun_ADXL345-master/SparkFun_ADXL345.cpp"
 
 uint8_t  DDRC = 0, PORTC = 0, MCUSR = 0;
 uint16_t TCNT1 = 0, TCCR1A = 0, TCCR1B = 0, TIMSK1 = 0;
+uint8_t  ADMUX = 0, ADCSRA = 0;
+uint16_t ADC = 0;
 unsigned long g_millis = 0, g_micros = 0;
 HardwareSerial Serial;
 EEPROMClass    EEPROM;
 SPIClass       SPI;
 AdxlFeed       adxlFeed = {0, 0, 256};
+/* Unused by CTX310 rev H, which never re-initialises the part -- but the
+   shared stubs reference them, so they need storage here too. */
+int            adxlConfigureCount = 0;
+uint8_t        spiRegs[64] = {0};
 
 /* ---- the half of SimpleModbusSlave the sketch calls into ---- */
 unsigned int modbus_update() { return 0; }

@@ -14,6 +14,18 @@ extern uint8_t  DDRC, PORTC, MCUSR;
 extern uint16_t TCNT1, TCCR1A, TCCR1B, TIMSK1;
 
 #define PC0 0
+#define PC1 1
+#define PC2 2
+
+/* ---- ADC, used only for the internal-bandgap Vcc measurement ---- */
+extern uint8_t  ADMUX, ADCSRA;
+extern uint16_t ADC;
+#define REFS0 6
+#define ADEN  7
+#define ADSC  6
+#define ADPS2 2
+#define ADPS1 1
+#define ADPS0 0
 
 /* Timer1 prescaler bits */
 #define CS10 0
@@ -29,6 +41,9 @@ inline unsigned long micros() { return g_micros; }
 /* ---- pins / interrupts ---- */
 #define INPUT  0
 #define OUTPUT 1
+#define INPUT_PULLUP 2
+#define LOW    0
+#define HIGH   1
 #define RISING 3
 inline void pinMode(uint8_t, uint8_t) {}
 inline int  digitalPinToInterrupt(int pin) { return pin; }
