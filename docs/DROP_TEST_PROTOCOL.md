@@ -347,16 +347,43 @@ arming window — the "arming never engages the arrest" rule is about
 events, not faults, and a device that cannot detect is not one to leave
 released.
 
-**Register 73 = 0 narrows it to two causes**, because the recovery path
-has been retrying once a second the whole time:
+**Register 73 = 0** means the recovery has been retrying once a second
+and has not yet succeeded. Either nothing is answering on SPI (DEVID not
+returning `0xE5` — sensor unpowered, or CS / SCLK / MOSI open), or it is
+answering and the stream still has not returned.
 
-- **Nothing is answering on SPI** — DEVID is not returning `0xE5`. Sensor
-  unpowered, or CS / SCLK / MOSI open.
-- **The part is answering and already in MEASURE mode** — so the data
-  path is fine and **INT1 (D2) is the broken link**.
+**Before firmware version with the DATA_READY clear, the second case was
+permanent.** See below — if you are simulating a loose connection, that
+is almost certainly what you are looking at, and it is a firmware
+failure, not a wiring one.
 
-Either way it is wiring, and in both cases it is the connection most
-recently disturbed.
+### The loose-connection case: a latched DATA_READY
+
+**DATA_READY is the one ADXL345 interrupt that reading `INT_SOURCE` does
+not clear.** The datasheet is explicit: it is cleared by reading
+`DATAX0`…`DATAZ1`, and nothing else.
+
+So interrupting the bus while DATA_READY is asserted — a loose
+connector, a disturbed cable, a read that did not reach the part —
+leaves **INT1 stuck HIGH**. The part keeps measuring at 1600 Hz and
+keeps the flag set, so the line never falls, and with a rising-edge
+interrupt there is never another edge. The detector is dead until the
+next power cycle, with a healthy, correctly configured accelerometer on
+a perfectly good bus.
+
+| Reg | Reads | |
+|---|---|---|
+| 27 | 0 | No edges |
+| 61 | 1 | `FAULT_RATE` |
+| 73 | 0 | Recovery retrying, not succeeding |
+| DEVID | `0xE5` | The part is there |
+| `POWER_CTL` | MEASURE set | And it is running |
+
+Nothing looks broken because nothing is. **The configuration sequence
+now ends with one throwaway data read**, which clears the flag: INT1
+falls, the next sample raises it, and the stream restarts. Re-test with
+a firmware carrying that fix before treating this state as a wiring
+fault.
 
 **What to do:**
 

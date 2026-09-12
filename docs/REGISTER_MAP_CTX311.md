@@ -401,12 +401,42 @@ band**, the firmware reads two ADXL345 registers:
 
 | Read | If | Then |
 |---|---|---|
-| `DEVID` (0x00) | ≠ `0xE5` | No part is answering — no sensor, cut CS, dead SCLK. Nothing is written and register 73 does not move |
-| `POWER_CTL` (0x2D) | MEASURE bit **clear** | The part restarted into standby. Reconfigure, **and count it in register 73** |
-| `POWER_CTL` (0x2D) | MEASURE bit **set** | The part is running; the missing samples are an INT1 or wiring problem. Config is re-applied anyway — cheap, and it covers a corrupted `INT_ENABLE` — but register 73 does **not** move |
+| `DEVID` (0x00) | ≠ `0xE5` | No part is answering — unpowered, or CS / SCLK / MOSI open. Nothing is written |
+| `DEVID` (0x00) | = `0xE5` | Re-apply the full configuration, whatever `POWER_CTL` says |
 
-That split keeps register 73 meaning "the part restarted under us"
-rather than "something was wrong once".
+**Register 73 counts recoveries that worked, not attempts.** The attempt
+is remembered; the counter moves on a later tick, once the sample rate
+is actually back in band. A genuinely cut INT1 wire therefore leaves
+register 73 at **0** however long it is retried, instead of wrapping a
+counter once a second and burying the only distinction that matters —
+did the controller fix it, or not.
+
+### The DATA_READY latch — why reconfiguring alone was not enough
+
+An earlier revision only reconfigured when `POWER_CTL`'s MEASURE bit was
+clear, reasoning that a part already measuring must have an INT1 problem
+that re-initialising could not fix. **A field test disproved that**, and
+the reason is a specific ADXL345 behaviour worth knowing:
+
+**DATA_READY is the one interrupt the ADXL345 does not clear when you
+read `INT_SOURCE`.** The datasheet is explicit — it is cleared by reading
+`DATAX0`…`DATAZ1`, and nothing else.
+
+So if the sample stream is interrupted while DATA_READY is asserted — a
+loose connector, a cable disturbed under load, a read that did not reach
+the part — **INT1 stays HIGH**. The part keeps measuring at 1600 Hz and
+keeps the flag set, so the line never falls, and with a rising-edge
+interrupt there is never another edge. The detector is dead until the
+next power cycle, with a healthy, correctly configured accelerometer on
+the end of a perfectly good bus.
+
+It reads as: **register 27 = 0, register 61 = 1, DEVID answering `0xE5`,
+`POWER_CTL` already in MEASURE.** Nothing looks broken because nothing
+is.
+
+One throwaway data read clears it. The configuration sequence now ends
+with one, so INT1 falls, the next sample raises it, and the stream
+restarts.
 
 The reads and the reconfiguration run with interrupts disabled, because
 SPI is not reentrant and the ISR uses it. The block costs at most one

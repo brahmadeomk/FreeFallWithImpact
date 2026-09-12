@@ -17,7 +17,7 @@ ring buffers, the Modbus frame buffer, the register array — and not by
 the sketch's own declarations, which are what you see when you read the
 source.
 
-The estimate was low. Built figure below: **1107 B for CTX311**, 79 %
+The estimate was low. Built figure below: **1108 B for CTX311**, 79 %
 above the estimate.
 
 ## Figures
@@ -27,14 +27,14 @@ Arduino Nano, ATmega328P, 16 MHz. 32256 B flash available to the sketch
 
 | | CTX310 rev H | CTX311 rev A |
 |---|---:|---:|
-| Flash (`.text` + `.data`) | 14678 B (44.8 %) | 20608 B (62.9 %) |
-| Static SRAM (`.data` + `.bss`) | 916 B (44.7 %) | **1107 B (54.1 %)** |
-| Free SRAM (static) | 1132 B (55 %) | **941 B (46 %)** |
-| `.text` | 14620 B | 20532 B |
+| Flash (`.text` + `.data`) | 14678 B (44.8 %) | 20656 B (63.0 %) |
+| Static SRAM (`.data` + `.bss`) | 916 B (44.7 %) | **1108 B (54.1 %)** |
+| Free SRAM (static) | 1132 B (55 %) | **940 B (46 %)** |
+| `.text` | 14620 B | 20580 B |
 | `.data` | 58 B | 76 B |
-| `.bss` | 858 B | 1031 B |
+| `.bss` | 858 B | 1032 B |
 
-CTX311 costs **+5930 B flash and +191 B static SRAM** over CTX310. The
+CTX311 costs **+5978 B flash and +192 B static SRAM** over CTX310. The
 SRAM delta is mostly the raised `BUFFER_SIZE` (128 → 160, +32 B) plus the
 loss-of-support state and the extra registers.
 
@@ -53,9 +53,11 @@ low-supply advisory (map 12) adds a further **+330 B flash and +9 B
 SRAM**. The sensor-communication fault (map 13 — the zero-data check
 and the trip-instant attribution) adds **+294 B flash and +4 B SRAM**,
 of which **+186 B is inside `myHandler()`**. Sensor re-initialisation
-(map 14) adds **+152 B flash and +4 B SRAM**, and **none of it is in
+(map 14) adds **+200 B flash and +5 B SRAM**, and **none of it is in
 the ISR** — `myHandler()` is unchanged at 3566 B, because the recovery
-runs entirely on the 1 Hz tick in `loop()`.
+runs entirely on the 1 Hz tick in `loop()`. That includes the
+DATA_READY clear and the verify-then-count state machine added after
+the first field test.
 
 **Watch the Modbus buffer, not the SRAM.** A full sweep is now 74
 registers = **153 bytes**, against `BUFFER_SIZE` 160 — **7 bytes spare**,
@@ -86,7 +88,7 @@ sustained figure.
 
 ## What "free SRAM" here does and does not mean
 
-The 941 B above is **static** free SRAM. It is the space the stack has
+The 940 B above is **static** free SRAM. It is the space the stack has
 to live in, not headroom known to be spare. It does not say how much of
 that the stack actually consumes — the deepest path is an ISR firing on
 top of `loop()` inside a Modbus response. The instrumentation below
@@ -124,8 +126,8 @@ flag.
 
 | Build | Flash | Static SRAM | `stackPaint` in image |
 |---|---:|---:|---|
-| release | 20608 B | 1107 B | absent |
-| `-DCTX311_STACK_DEBUG` | 20654 B (+46 B) | 1107 B (no change) | present |
+| release | 20656 B | 1108 B | absent |
+| `-DCTX311_STACK_DEBUG` | 20702 B (+46 B) | 1108 B (no change) | present |
 
 Verified in the linked image rather than assumed: the painter survives
 `--gc-sections`, loads `Z = _end` (0x0512), the canary `0xC5`, and loops
@@ -135,7 +137,7 @@ stored to `holdingRegs+0x60`, which is register 48.
 `test/run_tests.sh` builds and runs the CTX311 suite a third time with
 the flag on. The guarded code is invisible to a normal build, so that
 pass is what stops it rotting; and because the host stub returns 0, all
-265 assertions must still hold — if that pass ever diverges, the debug
+272 assertions must still hold — if that pass ever diverges, the debug
 build has started changing behaviour it should not.
 
 **The number itself still needs hardware.** Nothing here has been

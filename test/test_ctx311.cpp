@@ -887,7 +887,7 @@ static void test_unconfigured_sensor_is_reinitialised()
   printf("RECOVERY: a part that arrived after boot gets configured\n");
   armed();
   faultFlags = 0;
-  sensorReinitCount = 0;
+  sensorReinitCount = 0; recoveryPending = 0;
   spiRegs[0x00] = 0xE5;                 /* present and answering */
   spiRegs[0x2D] = 0x00;                 /* but back in STANDBY */
   adxlConfigureCount = 0;
@@ -895,10 +895,17 @@ static void test_unconfigured_sensor_is_reinitialised()
   /* No samples arriving -- exactly what an unconfigured part looks
      like from here. */
   runDiagnostics(0);
-  recoverSensorIfUnconfigured();
+  serviceSensorRecovery(0);
 
   CHECK(adxlConfigureCount > 0, "the part is reconfigured");
-  CHECK_EQ(sensorReinitCount, 1, "and register 73 counts it");
+  CHECK_EQ(sensorReinitCount, 0,
+           "but nothing is counted until the stream actually returns");
+  CHECK(recoveryPending, "the attempt is remembered");
+
+  serviceSensorRecovery(1589);          /* samples are back */
+  CHECK_EQ(sensorReinitCount, 1, "now register 73 counts it");
+  CHECK(!recoveryPending, "and the attempt is settled");
+
   CHECK(faultFlags & FAULT_RATE, "the rate fault still stands");
   CHECK(losLatched, "and the arrest stays engaged");
 }
@@ -908,35 +915,67 @@ static void test_absent_sensor_is_not_counted()
   printf("RECOVERY: nothing to configure when DEVID does not answer\n");
   armed();
   faultFlags = 0;
-  sensorReinitCount = 0;
+  sensorReinitCount = 0; recoveryPending = 0;
   spiRegs[0x00] = 0x00;                 /* undriven bus, no part */
   adxlConfigureCount = 0;
 
-  recoverSensorIfUnconfigured();
+  serviceSensorRecovery(0);
 
   CHECK_EQ(adxlConfigureCount, 0, "no registers written into the dark");
+  CHECK(!recoveryPending, "and no recovery is pending");
   CHECK_EQ(sensorReinitCount, 0,
-           "and register 73 is not inflated into a lie");
+           "register 73 is not inflated into a lie");
 
   spiRegs[0x00] = 0xE5;
 }
 
-static void test_running_part_is_not_counted_as_a_restart()
+static void test_latched_data_ready_is_recovered()
 {
-  printf("RECOVERY: an INT1 fault is not counted as a sensor restart\n");
+  printf("RECOVERY: a part that is present and MEASURING is still fixed\n");
   armed();
   faultFlags = 0;
-  sensorReinitCount = 0;
-  spiRegs[0x00] = 0xE5;                 /* part present ... */
-  spiRegs[0x2D] = 0x08;                 /* ... and already in MEASURE */
+  sensorReinitCount = 0; recoveryPending = 0;
   adxlConfigureCount = 0;
 
-  recoverSensorIfUnconfigured();
+  /* The field case. DATA_READY is the one interrupt the ADXL345 does
+     not clear on an INT_SOURCE read, so an interrupted stream can
+     leave INT1 latched HIGH with the part present, configured and
+     measuring. Nothing looks broken, and with a RISING-edge interrupt
+     there is never another edge.
 
+     An earlier revision skipped reconfiguration entirely in this case,
+     on the theory that a measuring part must have an unfixable INT1
+     problem. It does not: applySensorConfig() now ends with a
+     throwaway data read, which clears the flag. */
+  spiRegs[0x00] = 0xE5;                 /* present */
+  spiRegs[0x2D] = 0x08;                 /* and already in MEASURE */
+
+  serviceSensorRecovery(0);
   CHECK(adxlConfigureCount > 0,
-        "config is still re-applied, in case INT_ENABLE was corrupted");
+        "the part is reconfigured even though MEASURE is set");
+  CHECK(recoveryPending, "and the attempt is remembered");
+
+  serviceSensorRecovery(1589);
+  CHECK_EQ(sensorReinitCount, 1, "counted once the stream returns");
+}
+
+static void test_unfixable_wiring_never_counts()
+{
+  printf("RECOVERY: a cut INT1 line leaves register 73 at zero\n");
+  armed();
+  faultFlags = 0;
+  sensorReinitCount = 0; recoveryPending = 0;
+  spiRegs[0x00] = 0xE5;
+  spiRegs[0x2D] = 0x08;
+
+  /* Retried for a minute of ticks and it never comes back. The point
+     of counting fixes rather than attempts: this must not wrap a
+     counter once a second and bury the distinction that matters. */
+  for (int i = 0; i < 60; i++) serviceSensorRecovery(0);
+
   CHECK_EQ(sensorReinitCount, 0,
-           "but reg 73 counts restarts, not every INT1 fault");
+           "no fix, no count -- however long it is retried");
+  CHECK(recoveryPending, "still trying");
 }
 
 static void test_recovery_does_not_rearm_the_arrest()
@@ -944,7 +983,7 @@ static void test_recovery_does_not_rearm_the_arrest()
   printf("RECOVERY: restoring the sample stream does not re-arm\n");
   armed();
   faultFlags = 0;
-  sensorReinitCount = 0;
+  sensorReinitCount = 0; recoveryPending = 0;
   spiRegs[0x00] = 0xE5;
   spiRegs[0x2D] = 0x00;
 
@@ -954,11 +993,11 @@ static void test_recovery_does_not_rearm_the_arrest()
   CHECK_EQ(losByFault, 1, "attributed to a fault");
 
   /* Sensor comes back and is reconfigured. */
-  recoverSensorIfUnconfigured();
-  CHECK_EQ(sensorReinitCount, 1, "recovery happened");
-
-  /* Samples flow again and the rate is healthy. */
+  serviceSensorRecovery(0);
   feedLive(256, 100);
+  serviceSensorRecovery(1589);
+  CHECK_EQ(sensorReinitCount, 1, "recovery happened and is counted");
+
   runDiagnostics(1589);
 
   CHECK(losLatched, "the arrest is STILL engaged");
@@ -1603,7 +1642,8 @@ int main()
   test_real_fall_is_still_an_event();
   test_unconfigured_sensor_is_reinitialised();
   test_absent_sensor_is_not_counted();
-  test_running_part_is_not_counted_as_a_restart();
+  test_latched_data_ready_is_recovered();
+  test_unfixable_wiring_never_counts();
   test_recovery_does_not_rearm_the_arrest();
   test_live_data_does_not_raise_stuck();
   test_advisory_faults_do_not_engage_the_arrest();

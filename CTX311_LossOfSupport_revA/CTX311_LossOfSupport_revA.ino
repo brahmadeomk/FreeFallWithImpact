@@ -943,6 +943,7 @@ static   uint32_t maxLoopUs    = 0;    /* uint32: a full read is ~104 ms */
 static   uint16_t faultFlags   = 0;
 static   uint8_t  bootState    = BOOT_PENDING;
 static   uint16_t sensorReinitCount = 0;   /* published in reg 73 */
+static   uint8_t  recoveryPending   = 0;   /* reconfigured, awaiting proof */
 static   uint16_t bootSamples  = 0;
 static   unsigned long implausibleSinceMs = 0;
 static   uint8_t  implausibleRunning = 0;
@@ -1922,6 +1923,36 @@ static void applySensorConfig()
   adxl.setInterrupt(ADXL345_INT_DATA_READY_BIT, true);
   adxl.setInterruptMapping(ADXL345_INT_DATA_READY_BIT, ADXL345_INT1_PIN);
   adxl.getInterruptSource();               /* clear any stale latch */
+
+  /* ---- AND THEN CLEAR DATA_READY, WHICH THE LINE ABOVE DOES NOT ----
+     This is the difference between a recovery that works and one that
+     changes nothing, and it took a field test to find.
+
+     DATA_READY is the one interrupt the ADXL345 does NOT clear when you
+     read INT_SOURCE. The datasheet is explicit: it is cleared by
+     reading DATAX0..DATAZ1, and nothing else. getInterruptSource()
+     reads 0x30 and leaves it exactly where it was.
+
+     So if the sample stream is ever interrupted while DATA_READY is
+     asserted -- a loose connector, a cable disturbed under load, a read
+     that did not reach the part -- INT1 stays HIGH. The part keeps
+     measuring at 1600 Hz and keeps the flag set, so the line never
+     falls, and with a RISING-edge interrupt there is never another
+     edge. The detector is dead until the next power cycle, with a
+     perfectly healthy, perfectly configured accelerometer on the end
+     of a perfectly good bus.
+
+     That failure reads as: register 27 = 0, register 61 = 1
+     (FAULT_RATE), DEVID answering 0xE5, and POWER_CTL already in
+     MEASURE. Nothing looks broken because nothing is.
+
+     One throwaway read fixes it. It clears the flag, INT1 falls, and
+     the next sample raises it again -- an edge, and the stream
+     restarts. Harmless at boot, where it also discards whatever the
+     part latched before we configured it. */
+  int dx, dy, dz;
+  adxl.readAccel(&dx, &dy, &dz);
+  (void)dx; (void)dy; (void)dz;
 }
 
 /* Single-register read, done here rather than through the driver: the
@@ -1940,7 +1971,8 @@ static uint8_t adxlReadReg(uint8_t reg)
   return v;
 }
 
-/* Called from the 1 Hz tick when no usable sample stream is arriving.
+/* Driven from the 1 Hz tick with the rate just measured. Owns the whole
+   recovery decision, including whether it worked.
 
    Gated on the LIVE measured rate, not on faultFlags. faultFlags is
    sticky until CLEAR_FAULTS, so gating on it would rewrite the part's
@@ -1948,27 +1980,31 @@ static uint8_t adxlReadReg(uint8_t reg)
    unit's life. An out-of-band rate is the symptom itself and clears
    itself the moment samples return.
 
-   Two reads, and they mean different things:
+   DEVID must read 0xE5 before anything is written. If it does not,
+   there is no part answering -- unpowered, or CS / SCLK / MOSI open --
+   and configuring into the dark would be pointless and would turn
+   register 73 into a lie.
 
-   DEVID must be 0xE5. If it is not, there is no part answering -- no
-   sensor, cut CS, dead SCLK -- and there is nothing to configure.
-   Writing registers into the dark would turn register 73 into a lie.
+   If it does answer, the configuration is re-applied WHATEVER
+   POWER_CTL says. An earlier revision only bothered when the MEASURE
+   bit was clear, on the reasoning that a part already measuring must
+   have an INT1 problem that re-initialising could not fix. A field
+   test disproved that: see the DATA_READY note in applySensorConfig().
+   A part can be present, configured, measuring, and still never
+   deliver another sample, and one throwaway data read is the cure.
 
-   POWER_CTL's MEASURE bit is the actual signature of the failure this
-   exists for. An ADXL345 that has restarted comes up in STANDBY with
-   that bit clear, which is why it never asserts DATA_READY. If DEVID
-   answers and MEASURE is already set, the part is running and the
-   missing samples are an INT1 or wiring problem that re-initialising
-   cannot fix. The configuration is still re-applied -- it is cheap and
-   it covers a corrupted INT_ENABLE or INT_MAP -- but register 73 is
-   NOT incremented, so it stays a count of "the part restarted under
-   us" rather than a count of every INT1 fault.
+   Register 73 counts recoveries THAT WORKED, not attempts. The
+   attempt sets recoveryPending; the counter moves on a later tick,
+   once the rate is actually back in band. A genuinely cut INT1 wire
+   therefore leaves register 73 at zero however long it is retried,
+   instead of wrapping a counter once a second and burying the
+   distinction that matters -- did the controller fix it, or not.
 
-   INTERRUPTS OFF for the whole thing. SPI is not reentrant and
-   myHandler() uses it: an interleaved readAccel() would corrupt both
-   transfers and could hand the detector a garbage sample. The block is
-   a few hundred microseconds, so it costs at most one sample period --
-   and it only runs when samples are not arriving anyway.
+   INTERRUPTS OFF across the reads and the reconfiguration. SPI is not
+   reentrant and myHandler() uses it: an interleaved readAccel() would
+   corrupt both transfers and could hand the detector a garbage sample.
+   The block is a few hundred microseconds, so it costs at most one
+   sample period -- and it only runs when samples are not arriving.
 
    What this deliberately does NOT do: clear faultFlags, release the
    arrest, or re-arm anything. Recovering the sample stream is not the
@@ -1977,22 +2013,24 @@ static uint8_t adxlReadReg(uint8_t reg)
    the channel is faulted. A protective function that silently re-armed
    itself after its sensor vanished would be worse than one that stayed
    latched. */
-static void recoverSensorIfUnconfigured()
+static void serviceSensorRecovery(uint16_t measuredRate)
 {
-  uint8_t devid = 0, powerCtl = 0;
+  if (measuredRate >= RATE_MIN_HZ && measuredRate <= RATE_MAX_HZ) {
+    if (recoveryPending) {              /* it came back -- that is a fix */
+      recoveryPending = 0;
+      if (sensorReinitCount < 0xFFFFU) sensorReinitCount++;
+    }
+    return;
+  }
+
+  uint8_t devid = 0;
 
   ATOMIC_BLOCK(ATOMIC_RESTORESTATE) {
     devid = adxlReadReg(ADXL345_DEVID);
-    if (devid == ADXL345_DEVID_VALUE) {
-      powerCtl = adxlReadReg(ADXL345_POWER_CTL);
-      applySensorConfig();
-    }
+    if (devid == ADXL345_DEVID_VALUE) applySensorConfig();
   }
 
-  if (devid == ADXL345_DEVID_VALUE &&
-      !(powerCtl & ADXL345_MEASURE_BIT) &&
-      sensorReinitCount < 0xFFFFU)
-    sensorReinitCount++;
+  if (devid == ADXL345_DEVID_VALUE) recoveryPending = 1;
 }
 
 /* Boot check. Runs during the SETTLE window, before the detector is
@@ -2864,13 +2902,9 @@ void loop()
     uint16_t r16 = (rate > 65535UL) ? 65535U : (uint16_t)rate;
     runDiagnostics(r16);
 
-    /* No usable sample stream. Most often this is a dead part or a
-       detached INT1, which nothing here can fix -- but it is also what
-       a live-connected or brown-out-reset ADXL345 looks like, and that
-       one recovers. Cheap to try, once a second, only while broken. */
-    if (r16 < RATE_MIN_HZ || r16 > RATE_MAX_HZ) {
-      recoverSensorIfUnconfigured();
-    }
+    /* Re-initialise the part while no usable stream is arriving, and
+       notice on a later tick whether that actually brought it back. */
+    serviceSensorRecovery(r16);
   }
 
   modbus_update();
