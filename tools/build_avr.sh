@@ -12,7 +12,7 @@
 # Usage:
 #   tools/build_avr.sh <sketch-dir> <core-dir> <adxl-driver-dir> [outdir]
 #
-#   sketch-dir       CTX310_Vibration_revH/ or CTX311_LossOfSupport_revA/
+#   sketch-dir       VRM315_IM_revH/ or VRM315_IMLOS_revA/
 #   core-dir         a checkout of github.com/arduino/ArduinoCore-avr
 #   adxl-driver-dir  directory holding mFFT_SparkFun_ADXL345.cpp and its
 #                    header. NOT in this repository -- see the note below.
@@ -26,7 +26,7 @@
 #
 # Extra compiler flags come from $EXTRA. The one that matters:
 #
-#   EXTRA=-DCTX311_STACK_DEBUG tools/build_avr.sh CTX311_LossOfSupport_revA ...
+#   EXTRA=-DVRM315_STACK_DEBUG tools/build_avr.sh VRM315_IMLOS_revA ...
 #
 # builds the stack high-water image for a soak run. That image reports
 # minimum free SRAM in register 48 (a reserved hole in a release build)

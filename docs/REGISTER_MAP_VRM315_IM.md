@@ -1,4 +1,4 @@
-# CTX310 / VRM315 register map — map version 8 (firmware rev H)
+# VRM315-IM register map — map version 8 (firmware rev H)
 
 Modbus RTU slave, 9600 8N1, default slave ID 71. All registers are
 holding registers (function 3 to read, 6 or 16 to write).

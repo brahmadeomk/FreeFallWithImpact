@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Drop-rig capture for the CTX311. Logs every register to CSV and
+"""Drop-rig capture for the VRM315-IMLOS. Logs every register to CSV and
 summarises each event.
 
 Threshold and tolerance tuning (H-04) is the real schedule risk on this
@@ -31,8 +31,8 @@ the firmware latched at full rate.
 
 Requires minimalmodbus (pip install minimalmodbus).
 
-  ./ctx311_capture.py --port /dev/ttyUSB0 --out drop_2026-08-12.csv
-  ./ctx311_capture.py --port /dev/ttyUSB0 --out run.csv --duration 120
+  ./vrm315_imlos_capture.py --port /dev/ttyUSB0 --out drop_2026-08-12.csv
+  ./vrm315_imlos_capture.py --port /dev/ttyUSB0 --out run.csv --duration 120
 """
 
 import argparse
@@ -45,11 +45,11 @@ import time
 # restating them -- two copies of a register map is how they drift apart.
 import os
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-import ctx311_client as ctx  # noqa: E402
+import vrm315_imlos_client as vrm  # noqa: E402
 
 
 HEADER = (["host_time", "elapsed_s"]
-          + ["reg%d" % i for i in range(ctx.REGISTER_COUNT)])
+          + ["reg%d" % i for i in range(vrm.REGISTER_COUNT)])
 
 
 def decode_event(regs, status_mask):
@@ -72,15 +72,15 @@ def decode_event(regs, status_mask):
     """
     status = status_mask
     return {
-        "duration_ms": regs[ctx.LAST_DURATION],
-        "min_mg": regs[ctx.LAST_MIN_MAG],
-        "height": regs[ctx.LAST_HEIGHT],
-        "impact_mg": regs[ctx.LAST_IMPACT],
+        "duration_ms": regs[vrm.LAST_DURATION],
+        "min_mg": regs[vrm.LAST_MIN_MAG],
+        "height": regs[vrm.LAST_HEIGHT],
+        "impact_mg": regs[vrm.LAST_IMPACT],
         "reached_free_fall": bool(status & 0x08),
         "by_fault": bool(status & 0x20),
         "impact_followed": bool(status & 0x04),
         "clipped": bool(status & 0x10),
-        "trips": regs[ctx.LOS_COUNT],
+        "trips": regs[vrm.LOS_COUNT],
     }
 
 
@@ -94,7 +94,7 @@ def print_event_summary(index, event, faults):
     print()
     print("  ---- event %d ----" % index)
     if event["by_fault"]:
-        lost, advisory = ctx.decode_faults(faults)
+        lost, advisory = vrm.decode_faults(faults)
         names = ", ".join(n for n, _ in lost) or "none latched now"
         print("  TRIP CAUSE:  FAULT (%s)" % names)
         print("               NOT a loss-of-support event. Exclude this from")
@@ -112,7 +112,7 @@ def print_event_summary(index, event, faults):
     print("               approaches 0, a guided descent stays high)")
     print("  free-fall:   %s" % ("reached" if event["reached_free_fall"]
                                  else "NOT reached -- constrained descent"))
-    print("  height:      %s" % ctx.format_height(event["height"]))
+    print("  height:      %s" % vrm.format_height(event["height"]))
     print("  impact peak: %d mg%s"
           % (event["impact_mg"],
              "  [CLIPPED -- true peak is higher]" if event["clipped"] else ""))
@@ -138,7 +138,7 @@ def capture(instrument, writer, duration, quiet):
     try:
         while duration is None or (time.time() - start) < duration:
             try:
-                regs = ctx.read_all(instrument)
+                regs = vrm.read_all(instrument)
             except Exception as exc:            # keep the rig running
                 print("  read error: %s" % exc)
                 time.sleep(0.2)
@@ -153,20 +153,20 @@ def capture(instrument, writer, duration, quiet):
                     timespec="milliseconds"),
                  "%.3f" % elapsed] + list(regs))
 
-            status = regs[ctx.LOS_STATUS]
-            faults = regs[ctx.FAULT_FLAGS]
+            status = regs[vrm.LOS_STATUS]
+            faults = regs[vrm.FAULT_FLAGS]
 
             if prev_status is None:
                 # First poll: report the resting state so the log has a
                 # baseline, then treat later reads as transitions.
                 print("t=%6.2f  initial: LOS[%s] faults[%s]"
-                      % (elapsed, ctx.format_los_status(status),
+                      % (elapsed, vrm.format_los_status(status),
                          format_faults_short(faults)))
             else:
                 if status != prev_status:
                     print("t=%6.2f  reg49 %#06x -> %#06x   %s"
                           % (elapsed, prev_status, status,
-                             ctx.format_los_status(status)))
+                             vrm.format_los_status(status)))
                 if faults != prev_faults:
                     print("t=%6.2f  reg61 %#06x -> %#06x   %s"
                           % (elapsed, prev_faults, faults,
@@ -210,7 +210,7 @@ def capture(instrument, writer, duration, quiet):
 def format_faults_short(value):
     if not value:
         return "none"
-    lost, advisory = ctx.decode_faults(value)
+    lost, advisory = vrm.decode_faults(value)
     parts = ["%s!" % n for n, _ in lost] + [n for n, _ in advisory]
     return " ".join(parts)
 
@@ -237,14 +237,14 @@ def main(argv=None):
     args = parser.parse_args(argv)
 
     try:
-        instrument = ctx.connect(args.port, args.slave_id, args.baud)
+        instrument = vrm.connect(args.port, args.slave_id, args.baud)
     except ImportError:
         raise SystemExit("minimalmodbus is not installed "
                          "(pip install minimalmodbus)")
 
-    ctx.READ_CHUNK = max(0, args.chunk)
-    ctx.READ_RETRIES = max(1, args.retries)
-    ctx.PORT_HINT = args.port
+    vrm.READ_CHUNK = max(0, args.chunk)
+    vrm.READ_RETRIES = max(1, args.retries)
+    vrm.PORT_HINT = args.port
 
     # Same refusal as the client. Capturing a map-8 device would produce
     # a CSV that looks valid and is not.
@@ -254,11 +254,11 @@ def main(argv=None):
     # hex -- at a drop rig, with the unit already rigged. It now retries
     # and, failing that, says what to check.
     try:
-        ctx.check_map_version(ctx.read_all(instrument))
+        vrm.check_map_version(vrm.read_all(instrument))
     except SystemExit:
         raise                                   # version refusal: already clear
     except Exception as exc:
-        raise SystemExit(ctx.describe_read_failure(exc))
+        raise SystemExit(vrm.describe_read_failure(exc))
 
     with open(args.out, "w", newline="") as handle:
         writer = csv.writer(handle)

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Raspberry Pi client for the CTX310 / VRM315 impact monitor.
+"""Raspberry Pi client for the VRM315-IM impact monitor.
 
 Covers the two things that are easy to get wrong from the master side:
 
@@ -9,12 +9,12 @@ Covers the two things that are easy to get wrong from the master side:
   * Registers 32-34 are signed; every other register is unsigned.
   * Registers 35 and 48 are reserved holes and always read 0.
 
-See docs/REGISTER_MAP.md for the full map. Requires minimalmodbus
+See docs/REGISTER_MAP_VRM315_IM.md for the full map. Requires minimalmodbus
 (pip install minimalmodbus).
 
-  ./ctx310_client.py --port /dev/ttyUSB0 dump
-  ./ctx310_client.py --port /dev/ttyUSB0 command clear-peakhold
-  ./ctx310_client.py --port /dev/ttyUSB0 threshold 2500
+  ./vrm315_im_client.py --port /dev/ttyUSB0 dump
+  ./vrm315_im_client.py --port /dev/ttyUSB0 command clear-peakhold
+  ./vrm315_im_client.py --port /dev/ttyUSB0 threshold 2500
 """
 
 import argparse

@@ -1,13 +1,13 @@
 /* =====================================================================
-   CTX 311  --  Loss-of-Support Monitor for jacked / climbing systems
-   Revision A  -  derived from CTX310 rev H, register map version 9
+   VRM315-IMLOS  --  Loss-of-Support Monitor for jacked / climbing systems
+   Revision A  -  derived from VRM315-IM rev H, register map version 9
 
    WHAT THIS DEVICE DOES, AND WHAT IT MUST NOT BE ASKED TO DO
    ----------------------------------------------------------
-   The CTX311 drives an ARREST / BRAKE device. That makes it a
+   The VRM315-IMLOS drives an ARREST / BRAKE device. That makes it a
    PROTECTIVE FUNCTION, not a monitor with a useful side effect.
 
-   It is built from commercial-grade parts on the CTX310 hardware. It
+   It is built from commercial-grade parts on the VRM315-IM hardware. It
    has NO redundancy, NO diverse second channel, and was NOT developed
    under IEC 61508 or ISO 13849. It therefore carries NO SIL or PL
    rating and none may be claimed for it, in documentation, in
@@ -63,7 +63,7 @@
    DIAGNOSTIC COVERAGE IS THE POINT, NOT THE ALGORITHM
    ---------------------------------------------------
    The dangerous failure of a device like this is not a missed fall.
-   It is a dead sensor that looks like a stationary assembly. CTX310
+   It is a dead sensor that looks like a stationary assembly. VRM315-IM
    rev H had no protection against it whatsoever: if the ADXL345 died
    or the SPI bus stuck returning a constant value, the firmware saw a
    perfectly still machine and would never have tripped again.
@@ -112,7 +112,7 @@
    and clears itself. Reg 49 bit 6 is the pollable form of it.
    BEWARE: a PLC that treats health-open as a hard stop will refuse to
    start for ~2 s after a sensor reset. See the arming-window section
-   of docs/REGISTER_MAP_CTX311.md.
+   of docs/REGISTER_MAP_VRM315_IMLOS.md.
 
    NOT IMPLEMENTED, DELIBERATELY: the ADXL345 electrostatic SELF_TEST.
    It deflects the axes, which perturbs the very signal that operates
@@ -122,7 +122,7 @@
    only readAccel(). Add the real self-test once the driver is checked
    -- see bootCheck().
 
-   CHANGES FROM CTX310 REV H
+   CHANGES FROM VRM315-IM REV H
    -------------------------
    1. NEW loss-of-support detector, in the ISR, on RAW magnitude taken
       BEFORE gravity removal. Everything downstream of the DC tracker
@@ -153,7 +153,7 @@
    settings/trigger semantics, the command acknowledge path, the
    read-to-clear on reg 37 -- is rev H code, unchanged.
 
-   CTX310 REV H HISTORY FOLLOWS, RETAINED IN FULL
+   VRM315-IM REV H HISTORY FOLLOWS, RETAINED IN FULL
    ==============================================
 
    CHANGES FROM REV G
@@ -681,9 +681,9 @@
                    reserved and always read 0. Writing reg 35 no longer
                    does anything, so a master built for map 7 would
                    believe it had armed a trip that does not exist.)
-       9..12 = CTX311 rev A -- loss-of-support registers, arming
+       9..12 = VRM315-IMLOS rev A -- loss-of-support registers, arming
                    window, tilt, supply monitoring. Tabulated in
-                   docs/REGISTER_MAP_CTX311.md rather than here.
+                   docs/REGISTER_MAP_VRM315_IMLOS.md rather than here.
       14 = +reg 73, count of ADXL345 re-initialisations. Appended, so
                    a map-13 master cannot misread what it already reads,
                    but the sweep grows by one register and the version
@@ -698,7 +698,7 @@
        year = 2000 + (v >> 9);  month = (v >> 5) & 0x0F;  day = v & 0x1F
    ------------------------------------------------------------------ */
 #define FW_VERSION_MAJOR      2
-/* 2.0 = CTX311 rev A as first built.
+/* 2.0 = VRM315-IMLOS rev A as first built.
    2.1 = the field-test fixes, none of which move the register map:
          INT1 INPUT_PULLUP so a floating interrupt line cannot starve
          loop(); FAULT_ZERO_DATA and trip-instant attribution so a dead
@@ -810,7 +810,7 @@ enum
   Rsvd48Reg,           /* 48 RESERVED, always reads 0. Was the echo
                               of reg 35. */
 
-  /* ---------------- CTX311 additions, map version 9 ----------------
+  /* ---------------- VRM315-IMLOS additions, map version 9 ----------------
      Appended from 49. Regs 35 and 48 stay reserved and are NOT reused:
      a map-8 master could still write them.                          */
   LosStatusReg,        /* 49 bit0 LOS latched, bit1 LOS active now,
@@ -919,7 +919,7 @@ static   uint32_t publishedImpactMag2 = 0;
 static   uint8_t  overCount   = 0;
 static   uint16_t settleCount = 0;
 
-/* ------------------- loss-of-support path (CTX311) ------------------
+/* ------------------- loss-of-support path (VRM315-IMLOS) ------------------
    Operates on RAW magnitude, before gravity removal. ~20 bytes.
    No sample buffer is needed: this is a running counter, not a
    windowed statistic.                                              */
@@ -970,9 +970,9 @@ const uint16_t CONFIG_MAGIC = 0xA5B2;
 const int      EEPROM_ADDR  = 0;
 
 /* EEPROM layout. Offsets 0-6 are UNCHANGED from rev H (magic, slave
-   id, threshold), so a unit upgraded from CTX310 keeps its slave ID
+   id, threshold), so a unit upgraded from VRM315-IM keeps its slave ID
    and impact threshold -- the same courtesy rev H extended across the
-   G->H struct change. CTX311 fields start at offset 9.             */
+   G->H struct change. VRM315-IMLOS fields start at offset 9.             */
 struct Config {
   uint16_t magic;
   uint8_t  slaveId;
@@ -1047,7 +1047,7 @@ static void publishBlock();
    Field unit read 1203 us in reg 19 against that budget.
 
    The result is bit-identical to the (n >> 30) form -- verified over the
-   full uint32 range in test_registers.cpp.                            */
+   full uint32 range in test_vrm315_im.cpp.                            */
 static uint16_t isqrt32(uint32_t n)
 {
   uint32_t rem = 0, root = 0;
@@ -1127,9 +1127,9 @@ static void recomputeLosParams()
 /*  EEPROM configuration                                                */
 /* ==================================================================== */
 
-/* Offsets 0-6 are rev H's and are written identically, so a CTX310
-   unit reflashed to CTX311 keeps its slave ID and impact threshold.
-   CTX311 fields live at 9+ and were 0xFF on a rev H unit, which the
+/* Offsets 0-6 are rev H's and are written identically, so a VRM315-IM
+   unit reflashed to VRM315-IMLOS keeps its slave ID and impact threshold.
+   VRM315-IMLOS fields live at 9+ and were 0xFF on a rev H unit, which the
    range checks in loadConfig() reject into defaults.               */
 void writeConfig()
 {
@@ -2139,7 +2139,7 @@ static void updateOutput()
 /* ==================================================================== */
 /*  stack high-water instrumentation  --  DEBUG BUILDS ONLY             */
 /* ==================================================================== */
-/* Build with -DCTX311_STACK_DEBUG. It is OUT of a release build and
+/* Build with -DVRM315_STACK_DEBUG. It is OUT of a release build and
    must stay out: it reports through a RESERVED register, which a
    release image must never do.
 
@@ -2169,7 +2169,7 @@ static void updateOutput()
    Borrowing a hole also costs no diagnostic. The soak needs registers
    19, 26, 27, 31 and 54 to stay meaningful, and overloading any of
    those to carry this number would spoil the run it exists to serve. */
-#ifdef CTX311_STACK_DEBUG
+#ifdef VRM315_STACK_DEBUG
 
 #define STACK_CANARY 0xC5
 
@@ -2219,7 +2219,7 @@ static uint16_t stackUnusedBytes(void)
 static uint16_t stackUnusedBytes(void) { return 0; }
 #endif  /* __AVR__ */
 
-#endif  /* CTX311_STACK_DEBUG */
+#endif  /* VRM315_STACK_DEBUG */
 
 
 /* ==================================================================== */
@@ -2436,7 +2436,7 @@ static bool setTiltReference()
    terms: the bandgap is untrimmed and spec'd 1.0-1.2 V, so the reading
    can be out by several percent unit to unit. Trend it, compare a unit
    against itself, and calibrate per unit if an absolute number ever
-   matters. See docs/REGISTER_MAP_CTX311.md.
+   matters. See docs/REGISTER_MAP_VRM315_IMLOS.md.
 
    It also cannot see a FAST sag. At 1 Hz a droop lasting milliseconds --
    a relay pulling in, an inrush -- is invisible. That is what the
@@ -2568,7 +2568,7 @@ static void publishBlock()
   /* reserved holes: pinned to 0 on every read so a stray write from a
      map-7 master cannot stick and look like an armed trip */
   holdingRegs[Rsvd35Reg]          = 0;
-#ifdef CTX311_STACK_DEBUG
+#ifdef VRM315_STACK_DEBUG
   /* DEBUG BUILD ONLY -- reg 48 carries minimum free SRAM in bytes
      instead of 0. See the stack instrumentation block above. A release
      image must publish 0 here. */
@@ -2605,7 +2605,7 @@ static void publishBlock()
   if (cfgWasDefaulted) st |= 0x08;
   holdingRegs[StatusReg] = st;
 
-  /* ---------------- CTX311 registers, map version 9 --------------- */
+  /* ---------------- VRM315-IMLOS registers, map version 9 --------------- */
   uint8_t  lLat, lAct, lFault;
   uint16_t lCount, lRun, sCount;
   uint32_t lMin2, rawLive;

@@ -1,5 +1,5 @@
 /* =====================================================================
-   VRM315 / CTX 310  --  Triaxial Impact & Vibration Monitor
+   VRM315-IM  --  Triaxial Impact & Vibration Monitor
    Revision H  -  1600 Hz ODR, 0.63 ms impact detection
 
    CHANGES FROM REV G
@@ -505,7 +505,7 @@ static void publishBlock();
    Field unit read 1203 us in reg 19 against that budget.
 
    The result is bit-identical to the (n >> 30) form -- verified over the
-   full uint32 range in test_registers.cpp.                            */
+   full uint32 range in test_vrm315_im.cpp.                            */
 static uint16_t isqrt32(uint32_t n)
 {
   uint32_t rem = 0, root = 0;

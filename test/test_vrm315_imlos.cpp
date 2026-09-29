@@ -1,10 +1,10 @@
 /* =====================================================================
-   Host-side tests for the CTX311 rev A register and detector logic.
+   Host-side tests for the VRM315-IMLOS rev A register and detector logic.
 
-   Inherited from the CTX310 rev H suite. The rev H tests are kept
-   UNCHANGED except for the three assertions CTX311 deliberately
+   Inherited from the VRM315-IM rev H suite. The rev H tests are kept
+   UNCHANGED except for the three assertions VRM315-IMLOS deliberately
    invalidates (map version, firmware version, buffer ceiling): if a
-   rev H test breaks for any other reason, CTX311 has broken something
+   rev H test breaks for any other reason, VRM315-IMLOS has broken something
    that was working, and that is exactly what this file is for.
 
    The sketch is included directly, with the AVR core, SPI, EEPROM and
@@ -51,7 +51,7 @@ void modbus_update_comms(long, unsigned char, unsigned char) {}
 void modbus_configure(HardwareSerial *, long, unsigned char, unsigned char,
                       unsigned char, unsigned int, unsigned int *) {}
 
-#include "../CTX311_LossOfSupport_revA/CTX311_LossOfSupport_revA.ino"
+#include "../VRM315_IMLOS_revA/VRM315_IMLOS_revA.ino"
 
 /* ---------------------------- harness ------------------------------ */
 static int failures = 0;
@@ -291,7 +291,7 @@ static void test_identification_registers()
   CHECK(month >= 1 && month <= 12, "build month in range: got %u", month);
   CHECK(day >= 1 && day <= 31, "build day in range: got %u", day);
 
-  /* The map must still fit one function-3 request. CTX311 raises the
+  /* The map must still fit one function-3 request. VRM315-IMLOS raises the
      library BUFFER_SIZE 128 -> 160, so 5 + 2*N <= 160 -> N <= 77.
      At 64 registers there is room for a v10 without touching the
      library again -- which was the point of raising it now. */
@@ -502,7 +502,7 @@ static void test_conversions()
 
 
 /* ===================================================================== */
-/*  CTX311 -- loss-of-support detector                                   */
+/*  VRM315-IMLOS -- loss-of-support detector                                   */
 /* ===================================================================== */
 /* These DO exercise the ISR. Rev H could not: its ISR decisions needed
    real interrupt timing. The LOS path is different -- it is a pure
@@ -674,7 +674,7 @@ static void test_los_settings_follow_the_rev_h_pattern()
 }
 
 /* ===================================================================== */
-/*  CTX311 -- diagnostics. The part that matters most.                   */
+/*  VRM315-IMLOS -- diagnostics. The part that matters most.                   */
 /* ===================================================================== */
 
 static void test_dead_sensor_is_detected()
@@ -1089,7 +1089,7 @@ static void test_cannot_rearm_while_faulted()
 
 static void test_impact_threshold_floor_raised()
 {
-  printf("CTX311: impact threshold cannot be set into the free-fall step\n");
+  printf("VRM315-IMLOS: impact threshold cannot be set into the free-fall step\n");
   bootFresh();
 
   /* Entering free fall steps the AC path by ~1000 mg, because the DC
@@ -1595,7 +1595,7 @@ static void test_supply_threshold_is_a_setting()
 
 static void test_status_bit2_removed()
 {
-  printf("CTX311: status bit 2 removed -- it was a permanent fault light\n");
+  printf("VRM315-IMLOS: status bit 2 removed -- it was a permanent fault light\n");
   bootFresh();
   blockMissed = 500;                   /* normal, happens on every poll */
   blockReady = 1;

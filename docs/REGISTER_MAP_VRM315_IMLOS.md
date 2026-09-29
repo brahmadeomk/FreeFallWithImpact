@@ -1,4 +1,4 @@
-# CTX311 register map — map version 14 (firmware rev A)
+# VRM315-IMLOS register map — map version 14 (firmware rev A)
 
 Modbus RTU slave, 9600 8N1, default slave ID 71. All registers are
 holding registers (function 3 to read, 6 or 16 to write).
@@ -8,12 +8,12 @@ holding registers (function 3 to read, 6 or 16 to write).
 monitoring in 69–70, 12 the low-supply advisory in 71–72, 13 the
 sensor-communication fault in register 61 bit 7, 14 the sensor
 re-initialisation count in register 73). A
-CTX310 master expecting version 8 must refuse to ingest — and CTX311 changes
+VRM315-IM master expecting version 8 must refuse to ingest — and VRM315-IMLOS changes
 more than the map, so this check matters more than it did before.
 
 ## Flashing an update — what actually has to change
 
-**Only `CTX311_LossOfSupport_revA/CTX311_LossOfSupport_revA.ino`.**
+**Only `VRM315_IMLOS_revA/VRM315_IMLOS_revA.ino`.**
 
 `vendor/SparkFun_ADXL345-master/` is the official SparkFun driver and is
 **unmodified** — see `vendor/PROVENANCE.md`. Nothing in any field fix has
@@ -43,7 +43,7 @@ force every master to re-validate for nothing — so a device reading
 
 ## Read this before wiring anything
 
-The CTX311 drives an **arrest / brake device**. That makes it a
+The VRM315-IMLOS drives an **arrest / brake device**. That makes it a
 protective function, not a monitor. It is built on commercial-grade
 parts with no redundancy and was not developed under IEC 61508 or
 ISO 13849, so it carries **no SIL or PL rating and none may be
@@ -55,7 +55,7 @@ fail-safes the jacking or climbing system already has.
 
 | Pin | Meaning | Level |
 |---|---|---|
-| PC0 / A0 | Impact interlock — unchanged from CTX310 | HIGH = closed, LOW = tripped |
+| PC0 / A0 | Impact interlock — unchanged from VRM315-IM | HIGH = closed, LOW = tripped |
 | PC1 / A1 | **Loss of support → arrest device** | HIGH = safe, LOW = arrest |
 | PC2 / A2 | Health | HIGH = healthy, LOW = fault |
 
@@ -108,7 +108,7 @@ to clear, or accept the 2 s delay.
 unprotected through it.** No firmware setting closes that gap; it is a
 commissioning question about whether a reset can occur under load.
 
-## What CTX310 users must know before reflashing
+## What VRM315-IM users must know before reflashing
 
 | Change | Consequence |
 |---|---|
@@ -169,7 +169,7 @@ an older master cannot stick. They are not reused, so the rest of the map
 does not renumber.
 
 **One exception, and it never ships.** A firmware built with
-`-DCTX311_STACK_DEBUG` reports minimum free SRAM in bytes through
+`-DVRM315_STACK_DEBUG` reports minimum free SRAM in bytes through
 **register 48** instead of 0. That image exists for the H-05 soak run
 only — see `docs/RESOURCE_BUDGET.md`. If a device in the field reads
 non-zero at register 48, it is running a debug build and should be
@@ -252,7 +252,7 @@ The angle is measured against a baseline you capture with the assembly
 installed and known-good:
 
 ```sh
-tools/ctx311_client.py --port /dev/ttyUSB0 command set-tilt-ref
+tools/vrm315_imlos_client.py --port /dev/ttyUSB0 command set-tilt-ref
 ```
 
 That is command `0x0007`, and it is **refused unless the device is at
@@ -396,7 +396,7 @@ bandgap is untrimmed, so read register 69 on *this* unit with a healthy
 supply and set the limit below what it reports:
 
 ```sh
-tools/ctx311_client.py --port /dev/ttyUSB0 supply-limit 4300
+tools/vrm315_imlos_client.py --port /dev/ttyUSB0 supply-limit 4300
 ```
 
 **Writing 0 disables it entirely**, which is the escape hatch for a unit
@@ -631,12 +631,12 @@ has to be, to beat the loss-of-support confirm time.
 | `0x0005` | CLEAR_LOSCOUNT | Zeroes register 54 only |
 | `0x0006` | CLEAR_FAULTS | Clears latched fault bits. Live conditions re-raise within ~1 s |
 
-Confirm all of these the way CTX310 taught: write register 28, then read
+Confirm all of these the way VRM315-IM taught: write register 28, then read
 register 47 and check it moved. Register 28 always reads back 0.
 
 ## Registers 0–48
 
-Unchanged from CTX310 map version 8, with the two exceptions above
+Unchanged from VRM315-IM map version 8, with the two exceptions above
 (register 22's floor, register 25 bit 2). Registers 35 and 48 remain
 reserved holes reading 0 and were **not** reused — a map-8 master could
 still write them.

@@ -1,9 +1,9 @@
 # Free-Fall Detection Sensor — Architecture Definition Document
 **Version 0.2 — supersedes v0.1 in full**
 **Framework:** TOGAF 10 ADM (tailored for embedded product development)
-**Baseline:** CTX310 / VRM315 Triaxial Impact & Vibration Monitor, firmware **rev H**, register map **version 8**
+**Baseline:** VRM315-IM Triaxial Impact & Vibration Monitor, firmware **rev H**, register map **version 8**
 **Baseline source:** `github.com/brahmadeomk/Impact-detection-`, branch `claude/impact-detect-vib-sensor-yccai9`, commit `860839a`
-**Target:** Free-Fall Detection Sensor (working name **CTX311**)
+**Target:** Free-Fall Detection Sensor (working name **VRM315-IMLOS**)
 **Date:** 12 August 2026
 
 ---
@@ -29,7 +29,7 @@ v0.1 was written without the code. Six of its assumptions were wrong, and two of
 
 ## A.1 What the Baseline Actually Is
 
-The CTX310 is not a simple impact switch. It is a 1600 Hz triaxial DSP instrument with:
+The VRM315-IM is not a simple impact switch. It is a 1600 Hz triaxial DSP instrument with:
 
 - Per-sample impact detection at **0.63 ms** latency (`PEAK_CONFIRM = 1`), validated over ~27.5 million samples with zero false trips
 - Integer-only DSP: fixed-point `isqrt32`, no floating point, no dynamic allocation
@@ -45,7 +45,7 @@ This single principle drives the central decision of the target architecture (§
 
 ## A.2 Vision Statement
 
-> A free-fall detection sensor on the unmodified CTX310 hardware, detecting the onset of free fall in software at the existing 1600 Hz sample rate, driving the existing interlock output through exactly one decision path, and publishing fall characterisation through an extension of the existing Modbus register map.
+> A free-fall detection sensor on the unmodified VRM315-IM hardware, detecting the onset of free fall in software at the existing 1600 Hz sample rate, driving the existing interlock output through exactly one decision path, and publishing fall characterisation through an extension of the existing Modbus register map.
 
 ## A.3 Revised Architecture Principles
 
@@ -68,9 +68,9 @@ Three options:
 |---|---|---|
 | **(a) Shared output, cause in status bits** | Both tests trip PC0; new status bits say which | Repeats the rev G mistake. A master reading only reg 3 or reg 25 bit 0 still cannot tell a drop from a knock. Rejected |
 | **(b) Second physical output** | Free fall on PC1, impact stays on PC0 | Clean and unambiguous, and PC1–PC5 are free. But it changes customer wiring, and a second DI is not always available. Offered as a build option |
-| **(c) Free fall is the one path; impact is measured only** | On CTX311 firmware the peak test no longer operates the output. Registers 36, 37 and the impact snapshot are untouched and still published | **Selected.** Exactly the rev H pattern applied a second time |
+| **(c) Free fall is the one path; impact is measured only** | On VRM315-IMLOS firmware the peak test no longer operates the output. Registers 36, 37 and the impact snapshot are untouched and still published | **Selected.** Exactly the rev H pattern applied a second time |
 
-**Selected: (c), with (b) as a documented build option.** This keeps PR-09 intact, keeps the register map meaning stable, and means a CTX311 trip has exactly one meaning: *this thing fell*. Impact severity remains fully available over Modbus for post-event assessment — which is what it was always best at.
+**Selected: (c), with (b) as a documented build option.** This keeps PR-09 intact, keeps the register map meaning stable, and means a VRM315-IMLOS trip has exactly one meaning: *this thing fell*. Impact severity remains fully available over Modbus for post-event assessment — which is what it was always best at.
 
 ## A.5 Success Criteria (revised against measured baseline)
 
@@ -182,7 +182,7 @@ Free fall is defined by the *total* acceleration magnitude collapsing to zero �
 
 **2. Entering free fall produces a ~1000 mg step in the AC path.** During free fall raw x,y,z → 0 while `dcAcc` still holds gravity (≈ 256 counts at 3.9 mg/LSB), so `ax ≈ −256 counts ≈ 998 mg`. With the default 3000 mg threshold this is harmless. But `THRESHOLD_MIN_MG` is **10 mg** — any customer who sets register 22 below about 1000 mg gets an impact trip at the *start of every fall*, before the object has hit anything.
 
-> This is a latent interaction in the baseline today, not something free fall introduces. It is simply unreachable in an impact-only product because nobody sets a 500 mg impact threshold. On CTX311, raise `THRESHOLD_MIN_MG` to 1200 mg or document the floor explicitly.
+> This is a latent interaction in the baseline today, not something free fall introduces. It is simply unreachable in an impact-only product because nobody sets a 500 mg impact threshold. On VRM315-IMLOS, raise `THRESHOLD_MIN_MG` to 1200 mg or document the floor explicitly.
 
 **3. The gravity estimate decays during a long fall, and needs ~4 s to recover afterwards.** `DC_MAX_INC = 256` is exactly the gravity magnitude in counts, so free fall drives the tracker at precisely its maximum slew rate: 256/2048 = 0.125 counts per sample. Over a 300 ms fall (≈ 480 samples) the estimate decays ~23 %. After impact it needs several τ to re-converge, so **registers 32–34 are not trustworthy for orientation comparison until ~4 s after the device comes to rest.** Any orientation-change figure must respect that settling time.
 
@@ -351,13 +351,13 @@ Simpler than v0.1's six-state machine with four confirmation modes, because PR-0
 *Status:* Accepted. *Context:* The entire published measurement chain is AC-coupled through a 0.124 Hz tracker; free fall is a DC event and is invisible downstream of it. *Decision:* Compute `rawMag2` from `x, y, z` immediately after `readAccel()`. *Consequence:* Three additional multiplies that cannot reuse the existing AC squares; a new raw-magnitude register that is deliberately *not* comparable with reg 23; and the ~1000 mg AC step at fall onset must be documented and guarded by raising `THRESHOLD_MIN_MG`.
 
 **ADR-103 — One path to the output; impact becomes measurement-only**
-*Status:* Accepted. *Supersedes ADR-005.* *Context:* PR-09 and the rev H rationale. *Decision:* On CTX311, the free-fall test is the sole operator of PC0. The impact path retains full measurement (regs 36, 37, snapshot) but its `PORTC` write is removed. *Consequence:* A CTX311 trip has exactly one meaning. Customers wanting both interlocks take the two-output build option (PC1) or deploy both SKUs. **This must be stated prominently in the datasheet** — a customer migrating a CTX310 to CTX311 firmware would otherwise lose impact tripping silently.
+*Status:* Accepted. *Supersedes ADR-005.* *Context:* PR-09 and the rev H rationale. *Decision:* On VRM315-IMLOS, the free-fall test is the sole operator of PC0. The impact path retains full measurement (regs 36, 37, snapshot) but its `PORTC` write is removed. *Consequence:* A VRM315-IMLOS trip has exactly one meaning. Customers wanting both interlocks take the two-output build option (PC1) or deploy both SKUs. **This must be stated prominently in the datasheet** — a customer migrating a VRM315-IM to VRM315-IMLOS firmware would otherwise lose impact tripping silently.
 
 **ADR-104 — Extend the existing map to version 9; do not renumber**
-*Status:* Accepted. *Context:* PR-11 and the map history 4→8. *Decision:* New registers append from index 49. Reserved holes 35 and 48 stay reserved and are **not** reused — a map-8 master could still write them. Bump `REGISTER_MAP_VERSION` to 9. *Consequence:* Existing dashboards and `ctx310_client.py` keep working for registers 0–48; a map-8 master correctly refuses to ingest, per the existing connect-time check on reg 43.
+*Status:* Accepted. *Context:* PR-11 and the map history 4→8. *Decision:* New registers append from index 49. Reserved holes 35 and 48 stay reserved and are **not** reused — a map-8 master could still write them. Bump `REGISTER_MAP_VERSION` to 9. *Consequence:* Existing dashboards and `vrm315_im_client.py` keep working for registers 0–48; a map-8 master correctly refuses to ingest, per the existing connect-time check on reg 43.
 
 **ADR-105 — Output hold, not latch, by default**
-*Status:* Proposed — needs a decision. *Context:* The baseline auto-closes after `TRIP_HOLD_MS = 3000`. For an impact monitor a 3 s hold is sensible; for a *drop*, auto-rearming after 3 s means the interlock closes while the fallen object is still on the floor. *Recommendation:* Default the CTX311 hold to a longer period (30 s suggested) and provide `FfHoldMsReg = 0` to mean latch-until-command, using the existing command path (`CMD_CLEAR_FALL`) for acknowledgement. *Consequence:* The `updateOutput()` state machine gains one branch. Needs confirmation of what the customer's PLC expects.
+*Status:* Proposed — needs a decision. *Context:* The baseline auto-closes after `TRIP_HOLD_MS = 3000`. For an impact monitor a 3 s hold is sensible; for a *drop*, auto-rearming after 3 s means the interlock closes while the fallen object is still on the floor. *Recommendation:* Default the VRM315-IMLOS hold to a longer period (30 s suggested) and provide `FfHoldMsReg = 0` to mean latch-until-command, using the existing command path (`CMD_CLEAR_FALL`) for acknowledgement. *Consequence:* The `updateOutput()` state machine gains one branch. Needs confirmation of what the customer's PLC expects.
 
 ---
 
@@ -365,7 +365,7 @@ Simpler than v0.1's six-state machine with four confirmation modes, because PR-0
 
 ## E.1 Gap Analysis Against Actual Rev H
 
-| Component | Rev H state | CTX311 need | Gap |
+| Component | Rev H state | VRM315-IMLOS need | Gap |
 |---|---|---|---|
 | PCB / BOM / enclosure | Production | Identical | **None** |
 | ADXL345 config | ±16 g, full-res, 1600 Hz, SPI, DATA_READY→INT1 | Identical | **None** |
@@ -406,7 +406,7 @@ Simpler than v0.1's six-state machine with four confirmation modes, because PR-0
 | WP-109 | Drop rig; threshold and tolerance tuning | **L** |
 | WP-110 | Idle soak, mirroring the `PEAK_CONFIRM` protocol | M |
 | WP-111 | Enable the watchdog (R-104) | S |
-| WP-112 | Update `REGISTER_MAP.md`, `HARDWARE_VALIDATION.md`, `ctx310_client.py` | M |
+| WP-112 | Update `REGISTER_MAP_VRM315_IM.md`, `HARDWARE_VALIDATION.md`, `vrm315_im_client.py` | M |
 | WP-113 | Datasheet: the impact-tripping change must be unmissable (ADR-103) | S |
 
 **The firmware is no longer the critical path. WP-109 is.** Everything up to WP-108 is a few days of work on a codebase that is already doing the hard part. Getting the threshold and spike tolerance right against real drops is where the schedule actually lives.
@@ -456,7 +456,7 @@ Registers 0–48 **unchanged**, with two exceptions noted below. New registers a
 | ID | Risk | L | I | Mitigation |
 |---|---|---|---|---|
 | **R-101** | **Product deployed in a personnel-safety role.** Commercial components, no redundancy, no IEC 61508 development, and now a single unconfirmed trip path | Med | **Severe** | State the limitation in datasheet, manual and quotation. This is unchanged from v0.1 and **still the most important open question** |
-| **R-102** | ADR-103 not communicated: a customer reflashes a CTX310 to CTX311 and silently loses impact tripping | **High** | **High** | WP-113. Map version 9 forces a master-side failure, but the *interlock behaviour change* is invisible to the map check. Consider refusing to boot if EEPROM shows a CTX310 config signature |
+| **R-102** | ADR-103 not communicated: a customer reflashes a VRM315-IM to VRM315-IMLOS and silently loses impact tripping | **High** | **High** | WP-113. Map version 9 forces a master-side failure, but the *interlock behaviour change* is invisible to the map check. Consider refusing to boot if EEPROM shows a VRM315-IM config signature |
 | **R-103** | Free-fall threshold and spike tolerance prove site-specific | High | Med | Runtime-configurable (regs 50, 52); publish the time-vs-height table; WP-109 |
 | **R-104** | **Watchdog is disabled** (`wdt_disable()` in `setup()`, `avr/wdt.h` included but unused) | Med | High | WP-111. A hang currently leaves the interlock in whatever state it was in. Note the fail-safe direction: PC0 low = open, so a *power* failure opens the interlock, but a firmware hang with the output closed does not |
 | **R-105** | ISR budget exceeded after WP-101 | Low | High | 4–5 µs against 480 µs headroom. WP-108 measures it. PR-12 |
@@ -472,7 +472,7 @@ Registers 0–48 **unchanged**, with two exceptions noted below. New registers a
 ## 14. Immediate Next Actions
 
 1. **Answer R-101.** Will this ever be used to protect people? Everything else is engineering; this is not.
-2. **Decide ADR-103.** Is impact-measurement-only correct for the CTX311 SKU, or is a second output on PC1 required? This determines the datasheet and the customer conversation, not just the code.
+2. **Decide ADR-103.** Is impact-measurement-only correct for the VRM315-IMLOS SKU, or is a second output on PC1 required? This determines the datasheet and the customer conversation, not just the code.
 3. **Decide ADR-105.** Does the customer's PLC want a timed hold or a latch-until-acknowledge?
 4. **Confirm the SRAM figure** against a linker map — my ~620 B is source inspection, not measurement (PR-12).
 5. **Confirm the minimum drop height of interest.** This sets the default for reg 52 and is the single most consequential number in the product.

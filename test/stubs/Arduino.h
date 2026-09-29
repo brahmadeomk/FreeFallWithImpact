@@ -1,4 +1,4 @@
-/* Host-side stand-in for the AVR core, used only by test/test_registers.cpp
+/* Host-side stand-in for the AVR core, used only by test/test_vrm315_im.cpp
    so the sketch's register logic can be compiled and exercised on a PC.
    Nothing here is used by the firmware build. */
 #ifndef TEST_STUB_ARDUINO_H

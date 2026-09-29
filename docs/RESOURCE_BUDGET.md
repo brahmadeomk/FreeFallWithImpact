@@ -1,4 +1,4 @@
-# Flash and SRAM budget — CTX310 rev H and CTX311 rev A
+# Flash and SRAM budget — VRM315-IM rev H and VRM315-IMLOS rev A
 
 **Built, not estimated.** Figures come from a real `avr-gcc` link for the
 ATmega328P against the ADXL345 driver now vendored in this repository at
@@ -17,7 +17,7 @@ ring buffers, the Modbus frame buffer, the register array — and not by
 the sketch's own declarations, which are what you see when you read the
 source.
 
-The estimate was low. Built figure below: **1108 B for CTX311**, 79 %
+The estimate was low. Built figure below: **1108 B for VRM315-IMLOS**, 79 %
 above the estimate.
 
 ## Figures
@@ -25,7 +25,7 @@ above the estimate.
 Arduino Nano, ATmega328P, 16 MHz. 32256 B flash available to the sketch
 (bootloader occupies the rest), 2048 B SRAM.
 
-| | CTX310 rev H | CTX311 rev A |
+| | VRM315-IM rev H | VRM315-IMLOS rev A |
 |---|---:|---:|
 | Flash (`.text` + `.data`) | 14678 B (44.8 %) | 20656 B (63.0 %) |
 | Static SRAM (`.data` + `.bss`) | 916 B (44.7 %) | **1108 B (54.1 %)** |
@@ -34,7 +34,7 @@ Arduino Nano, ATmega328P, 16 MHz. 32256 B flash available to the sketch
 | `.data` | 58 B | 76 B |
 | `.bss` | 858 B | 1032 B |
 
-CTX311 costs **+5978 B flash and +192 B static SRAM** over CTX310. The
+VRM315-IMLOS costs **+5978 B flash and +192 B static SRAM** over VRM315-IM. The
 SRAM delta is mostly the raised `BUFFER_SIZE` (128 → 160, +32 B) plus the
 loss-of-support state and the extra registers.
 
@@ -99,8 +99,8 @@ answers that, but only once it has been flashed.
 It is written, and it is **off by default**. Build it with:
 
 ```sh
-EXTRA=-DCTX311_STACK_DEBUG tools/build_avr.sh \
-    CTX311_LossOfSupport_revA <core-dir> vendor/SparkFun_ADXL345-master
+EXTRA=-DVRM315_STACK_DEBUG tools/build_avr.sh \
+    VRM315_IMLOS_revA <core-dir> vendor/SparkFun_ADXL345-master
 ```
 
 **How it works.** A naked routine in `.init1` — before `.bss` is
@@ -127,14 +127,14 @@ flag.
 | Build | Flash | Static SRAM | `stackPaint` in image |
 |---|---:|---:|---|
 | release | 20656 B | 1108 B | absent |
-| `-DCTX311_STACK_DEBUG` | 20702 B (+46 B) | 1108 B (no change) | present |
+| `-DVRM315_STACK_DEBUG` | 20702 B (+46 B) | 1108 B (no change) | present |
 
 Verified in the linked image rather than assumed: the painter survives
 `--gc-sections`, loads `Z = _end` (0x0512), the canary `0xC5`, and loops
 to `__stack` (0x08FF) — 1005 bytes painted — and the counter's result is
 stored to `holdingRegs+0x60`, which is register 48.
 
-`test/run_tests.sh` builds and runs the CTX311 suite a third time with
+`test/run_tests.sh` builds and runs the VRM315-IMLOS suite a third time with
 the flag on. The guarded code is invisible to a normal build, so that
 pass is what stops it rotting; and because the host stub returns 0, all
 272 assertions must still hold — if that pass ever diverges, the debug
@@ -147,7 +147,7 @@ release build back on.
 ## Reproducing
 
 ```sh
-tools/build_avr.sh CTX311_LossOfSupport_revA <core-dir> vendor/SparkFun_ADXL345-master
+tools/build_avr.sh VRM315_IMLOS_revA <core-dir> vendor/SparkFun_ADXL345-master
 ```
 
 - toolchain: `avr-gcc (GCC) 7.3.0`, `GNU size (GNU Binutils) 2.26.20160125`

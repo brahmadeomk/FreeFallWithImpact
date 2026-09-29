@@ -1,4 +1,4 @@
-# Drop test protocol — CTX311 rev A
+# Drop test protocol — VRM315-IMLOS rev A
 
 **Mostly a template.** The tables are blank on purpose — filling them in
 is T-10's job, done at the rig with a real unit. Do not populate them
@@ -51,13 +51,13 @@ or meter on it. Not a real arrest device — that needs H-01 closed first.
 5. **Re-arm** before the next one — the output latches by default:
 
    ```sh
-   tools/ctx311_client.py --port /dev/ttyUSB0 command clear-los
+   tools/vrm315_imlos_client.py --port /dev/ttyUSB0 command clear-los
    ```
 
 Or watch it live, which prints a summary per event automatically:
 
 ```sh
-tools/ctx311_capture.py --port /dev/ttyUSB0 --out bench.csv
+tools/vrm315_imlos_capture.py --port /dev/ttyUSB0 --out bench.csv
 ```
 
 ### Reading the result honestly
@@ -221,7 +221,7 @@ transient, and the device already records both:
 
 Provoke a false trip at a low threshold and short confirm (25 ms) and
 read registers 55 and 56, or capture normal operation with
-`tools/ctx311_capture.py`, which summarises both per event. With those
+`tools/vrm315_imlos_capture.py`, which summarises both per event. With those
 two numbers the threshold/time corner can be chosen rather than guessed.
 
 ### Measuring the margin — registers 55 and 56 record near-misses
@@ -238,7 +238,7 @@ registers track a below-threshold run **whether or not it ever trips**:
 
 Procedure:
 
-1. `tools/ctx311_client.py --port /dev/ttyUSB0 command clear-los` to
+1. `tools/vrm315_imlos_client.py --port /dev/ttyUSB0 command clear-los` to
    reset the record.
 2. Run normal operation for a representative period.
 3. Read registers 55 and 56.
@@ -248,7 +248,7 @@ margin. If it reads 48 ms, the setting is on the edge and one stiffer
 start will trip it. Register 56 works the same way against register 50:
 850 mg configured and 700 mg observed is 150 mg of headroom.
 
-Better still, run `tools/ctx311_capture.py` through normal operation —
+Better still, run `tools/vrm315_imlos_capture.py` through normal operation —
 it polls continuously, so it catches runs a single read would miss, and
 register 55 only holds the **last** one.
 
@@ -561,7 +561,7 @@ Always reads back 0. Confirm through registers 45–47, never by reading 28.
 | 64 tilt | `0xFFFF` (65535) | **Not valid** — no reference set, or never yet at rest. Not 6553.5° |
 | 69 / 70 supply | `0xFFFF` (65535) | **Not measured yet** — not 65.5 V |
 | 59 output hold | `0` | Latch until commanded (the default) — not "no hold" |
-| 48 reserved | non-zero | You are running a `-DCTX311_STACK_DEBUG` image. Reflash a release build |
+| 48 reserved | non-zero | You are running a `-DVRM315_STACK_DEBUG` image. Reflash a release build |
 
 ---
 
@@ -736,7 +736,7 @@ Record once per session, not per drop.
 One capture per drop, named so the CSV and the row below match:
 
 ```sh
-tools/ctx311_capture.py --port /dev/ttyUSB0 --out drop_<date>_<n>.csv
+tools/vrm315_imlos_capture.py --port /dev/ttyUSB0 --out drop_<date>_<n>.csv
 ```
 
 Confirm the device is armed before releasing: register 49 bit 6 must be
@@ -747,7 +747,7 @@ cannot trip. Discard and repeat.
 After a trip the output latches by default. Re-arm with:
 
 ```sh
-tools/ctx311_client.py --port /dev/ttyUSB0 command clear-los
+tools/vrm315_imlos_client.py --port /dev/ttyUSB0 command clear-los
 ```
 
 If that is **refused**, the detection channel is still faulted. Fix the
@@ -846,7 +846,7 @@ header is computed from a build, not measured; this is where it becomes
 a measurement.
 
 Register 48 only carries a number if the unit is running an image built
-with `-DCTX311_STACK_DEBUG` (see `docs/RESOURCE_BUDGET.md`). It reports
+with `-DVRM315_STACK_DEBUG` (see `docs/RESOURCE_BUDGET.md`). It reports
 minimum free SRAM in bytes — the one figure the static budget cannot
 give. Run the soak on that image if you want it, then **reflash a
 release image before the unit goes into service**: a release build reads

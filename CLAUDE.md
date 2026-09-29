@@ -1,4 +1,4 @@
-# CLAUDE.md — CTX310 / CTX311 firmware
+# CLAUDE.md — VRM315-IM / VRM315-IMLOS firmware
 
 Persistent context for Claude Code working in this repository. Read
 this before touching anything.
@@ -12,20 +12,22 @@ lives on branch `claude/impact-detect-vib-sensor-yccai9`. Check out that
 branch first; a clone that looks empty is this, not a broken clone.
 
 ```
-CTX310_Vibration_revH/     shipping impact + vibration monitor (rev H)
-CTX311_LossOfSupport_revA/ loss-of-support monitor (rev A) — NEW
-docs/REGISTER_MAP.md       CTX310 map v8
-docs/REGISTER_MAP_CTX311.md CTX311 map v9
-docs/HARDWARE_VALIDATION.md real measurements from real units
-test/run_tests.sh          builds and runs BOTH suites
-test/test_registers.cpp    CTX310, 79 checks
-test/test_ctx311.cpp       CTX311, 130 checks
-test/stubs/                host stand-ins for core, SPI, EEPROM, ADXL
-tools/ctx310_client.py     Modbus client, map v8
-tools/ctx311_client.py     Modbus client, map v9
-tools/ctx311_capture.py    drop-rig CSV capture
-tools/build_avr.sh         real AVR build, flash/SRAM figures
-vendor/                    third-party code -- see vendor/PROVENANCE.md
+VRM315_IM_revH/                   impact + vibration monitor (rev H)
+VRM315_IMLOS_revA/                loss-of-support monitor (rev A)
+docs/REGISTER_MAP_VRM315_IM.md    VRM315-IM map v8
+docs/REGISTER_MAP_VRM315_IMLOS.md VRM315-IMLOS map v14
+docs/HARDWARE_VALIDATION.md       real measurements from real units
+docs/DROP_TEST_PROTOCOL.md        field procedure, register codes, runbooks
+docs/RESOURCE_BUDGET.md           built flash/SRAM figures
+test/run_tests.sh                 builds and runs ALL THREE passes
+test/test_vrm315_im.cpp           VRM315-IM, 79 checks
+test/test_vrm315_imlos.cpp        VRM315-IMLOS, 272 checks
+test/stubs/                       host stand-ins for core, SPI, EEPROM, ADXL
+tools/vrm315_im_client.py         Modbus client, map v8
+tools/vrm315_imlos_client.py      Modbus client, map v14
+tools/vrm315_imlos_capture.py     drop-rig CSV capture
+tools/build_avr.sh                real AVR build, flash/SRAM figures
+vendor/                           third-party code -- see vendor/PROVENANCE.md
 ```
 
 The ADXL345 driver lives at `vendor/SparkFun_ADXL345-master/`, NOT beside
@@ -40,35 +42,46 @@ directory first. `tools/build_avr.sh` copies it in for AVR builds.
 ```
 
 No AVR toolchain needed — the stubs let both sketches compile and run on
-the host. Current state: **79 + 130 checks, 0 failures.** Both suites
-must stay green.
+the host. Current state: **79 + 272 + 272 checks, 0 failures** — the
+third pass is the IMLOS suite rebuilt with `-DVRM315_STACK_DEBUG`. All
+three must stay green.
 
 There is no AVR toolchain in the container by default. If a task needs
 flash/SRAM figures, install `arduino-cli` or `gcc-avr` and say in the
 commit message that the numbers came from a build, not from inspection.
 
+## Naming
+
+The series is **VRM315**. Two models:
+
+- **VRM315-IM** — impact and vibration. Was CTX310 before the rename.
+- **VRM315-IMLOS** — adds loss-of-support detection. Was CTX311.
+
+`CTX310` and `CTX311` appear nowhere in the tree any more. Commits before
+the rename use the old names; that is history, not a second product.
+
 ## What these devices are
 
-**CTX310** — triaxial impact and vibration monitor. 1600 Hz, ADXL345 over
+**VRM315-IM** — triaxial impact and vibration monitor. 1600 Hz, ADXL345 over
 SPI, ATmega328P, Modbus RTU. Drives an interlock on PC0.
 
-**CTX311** — derived from CTX310 rev H. Detects **loss of support** on a
+**VRM315-IMLOS** — derived from VRM315-IM rev H. Detects **loss of support** on a
 jacked or climbing structural assembly and drives an **arrest / brake
 device** on PC1.
 
-CTX311 is a **protective function**. It is built from commercial parts
+VRM315-IMLOS is a **protective function**. It is built from commercial parts
 with no redundancy and was not developed under IEC 61508 or ISO 13849.
 
 - **Never add a SIL or PL claim** to any file, comment, doc or commit.
 - **Never remove or soften** the limitation notices in the sketch header
-  or `docs/REGISTER_MAP_CTX311.md`.
+  or `docs/REGISTER_MAP_VRM315_IMLOS.md`.
 - If a change would weaken a diagnostic or a fail-safe default, stop and
   say so rather than making it.
 
 ## Invariants — do not break these
 
-1. **Both test suites stay green.** The 79 CTX310 checks are a
-   regression net for field-proven behaviour. If CTX311 work breaks one,
+1. **Both test suites stay green.** The 79 VRM315-IM checks are a
+   regression net for field-proven behaviour. If VRM315-IMLOS work breaks one,
    something that works in the field has been broken. Fix the code, not
    the assertion, unless the change is deliberate and documented.
 2. **Decisions in the ISR, presentation in `loop()`.** No roots, no
@@ -113,7 +126,7 @@ confirms it. Static analysis of compiled output is not evidence.
 When writing a figure into a doc or comment, mark how it was obtained:
 measured on hardware, computed from a build, or estimated from source.
 
-The ISR cost figure in the CTX311 header is now **computed from a build**
+The ISR cost figure in the VRM315-IMLOS header is now **computed from a build**
 (disassembly of `myHandler()`, cycles counted per path) and is labelled
 as such. It replaced an estimate that was low by ~2.5x. It is still not
 a measurement: it excludes interrupt entry/exit. **Do not promote it to
@@ -123,7 +136,7 @@ The flash and SRAM figures in `docs/RESOURCE_BUDGET.md` are likewise
 built, not measured.
 
 The stack high-water mark is **instrumented but unmeasured**. The code
-exists behind `-DCTX311_STACK_DEBUG` and reports through reserved
+exists behind `-DVRM315_STACK_DEBUG` and reports through reserved
 register 48; nothing has been flashed, so there is still no number.
 A release build must read 0 at register 48 — if you ever change that,
 you have shipped a debug image.

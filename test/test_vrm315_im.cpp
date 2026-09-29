@@ -1,5 +1,5 @@
 /* =====================================================================
-   Host-side tests for the CTX310 rev H register logic.
+   Host-side tests for the VRM315-IM rev H register logic.
 
    The sketch is included directly, with the AVR core, SPI, EEPROM and
    the ADXL driver replaced by the stubs in test/stubs. Only the parts
@@ -34,7 +34,7 @@ HardwareSerial Serial;
 EEPROMClass    EEPROM;
 SPIClass       SPI;
 AdxlFeed       adxlFeed = {0, 0, 256};
-/* Unused by CTX310 rev H, which never re-initialises the part -- but the
+/* Unused by VRM315-IM rev H, which never re-initialises the part -- but the
    shared stubs reference them, so they need storage here too. */
 int            adxlConfigureCount = 0;
 uint8_t        spiRegs[64] = {0};
@@ -45,7 +45,7 @@ void modbus_update_comms(long, unsigned char, unsigned char) {}
 void modbus_configure(HardwareSerial *, long, unsigned char, unsigned char,
                       unsigned char, unsigned int, unsigned int *) {}
 
-#include "../CTX310_Vibration_revH/CTX310_Vibration_revH.ino"
+#include "../VRM315_IM_revH/VRM315_IM_revH.ino"
 
 /* ---------------------------- harness ------------------------------ */
 static int failures = 0;

@@ -1,4 +1,4 @@
-# Impact detection — CTX310 / VRM315 triaxial impact & vibration monitor
+# Impact detection — VRM315-IM triaxial impact & vibration monitor
 
 ATmega328-based Modbus RTU slave built around an ADXL345 at 1600 Hz,
 detecting impacts down to 0.63 ms and driving an interlock output.
@@ -6,11 +6,11 @@ detecting impacts down to 0.63 ms and driving an interlock output.
 Current firmware: **rev H, register map version 8.** Have the master read
 register 43 on connect and refuse to ingest an unexpected value.
 
-- `CTX310_Vibration_revH/` — the firmware sketch plus the patched
+- `VRM315_IM_revH/` — the firmware sketch plus the patched
   `SimpleModbusSlave` library it needs
-- `docs/REGISTER_MAP.md` — the register map, written for whoever is
+- `docs/REGISTER_MAP_VRM315_IM.md` — the register map, written for whoever is
   talking to this thing from a Pi or a PLC
-- `tools/ctx310_client.py` — Raspberry Pi client that reads the map and
+- `tools/vrm315_im_client.py` — Raspberry Pi client that reads the map and
   sends commands correctly
 - `test/` — host-side tests for the register logic, no AVR toolchain
   needed: `./test/run_tests.sh`
@@ -44,10 +44,10 @@ command landed. Firmware rev G adds it:
 
 Read register 47, write the command, read 47 again and confirm it moved.
 That works even when the same command is sent twice in a row, which an
-echo alone cannot tell you. `tools/ctx310_client.py` does exactly this:
+echo alone cannot tell you. `tools/vrm315_im_client.py` does exactly this:
 
 ```
-./tools/ctx310_client.py --port /dev/ttyUSB0 command clear-peakhold
+./tools/vrm315_im_client.py --port /dev/ttyUSB0 command clear-peakhold
 ```
 
 ## One trip path (rev H)
@@ -84,7 +84,7 @@ refresh. If a poll landed between your write and the next pass of
 firmware ever looked at it, and the setting silently reverted.
 
 Rev G stops the read path from touching any writable register.
-`test/test_registers.cpp` covers it — the test fails against the rev F
+`test/test_vrm315_im.cpp` covers it — the test fails against the rev F
 behaviour and passes against rev G.
 
 Register 35 also has an effective-value echo now (register 48), matching
@@ -116,7 +116,7 @@ rem = (rem << 2) | ((uint8_t)(n >> 24) >> 6);   /* NOT (n >> 30) */
 | before | ~4200 cycles (265 µs) | ~1050 µs |
 | after | ~900 cycles (57 µs) | ~230 µs |
 
-Same algorithm, bit-identical output — `test_registers.cpp` compares it
+Same algorithm, bit-identical output — `test_vrm315_im.cpp` compares it
 against the old form and against `floor(sqrt(n))` across the full uint32
 range on every run.
 
@@ -179,7 +179,7 @@ want it back at 2.
 
 ## Building
 
-Open `CTX310_Vibration_revH/CTX310_Vibration_revH.ino` in the Arduino
+Open `VRM315_IM_revH/VRM315_IM_revH.ino` in the Arduino
 IDE. The sketch folder carries its own patched copy of
 `SimpleModbusSlave` — do **not** let the IDE pick up an installed copy of
 the stock library instead. The patches are:
@@ -204,7 +204,7 @@ there would shadow the host test stub and break `test/run_tests.sh`.
 `tools/build_avr.sh` handles this for command-line builds:
 
 ```
-tools/build_avr.sh CTX311_LossOfSupport_revA <core-dir> vendor/SparkFun_ADXL345-master
+tools/build_avr.sh VRM315_IMLOS_revA <core-dir> vendor/SparkFun_ADXL345-master
 ```
 
 ## Tests

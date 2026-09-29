@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Raspberry Pi client for the CTX311 loss-of-support monitor (map v9).
+"""Raspberry Pi client for the VRM315-IMLOS loss-of-support monitor (map v9).
 
-Separate from ctx310_client.py on purpose. That client knows map v8 and
-would misread a CTX311 in ways that matter -- register 35 is a reserved
+Separate from vrm315_im_client.py on purpose. That client knows map v8 and
+would misread a VRM315-IMLOS in ways that matter -- register 35 is a reserved
 hole here too, but registers 49-63 do not exist in v8 at all, and
 register 60 looks like a magnitude while meaning something different from
 anything in v8.
@@ -22,13 +22,13 @@ The things this client exists to get right:
     on a known code means REFUSED, and it says so rather than reporting
     success.
 
-See docs/REGISTER_MAP_CTX311.md for the full map. Requires minimalmodbus
+See docs/REGISTER_MAP_VRM315_IMLOS.md for the full map. Requires minimalmodbus
 (pip install minimalmodbus).
 
-  ./ctx311_client.py --port /dev/ttyUSB0 dump
-  ./ctx311_client.py --port /dev/ttyUSB0 status
-  ./ctx311_client.py --port /dev/ttyUSB0 command clear-los
-  ./ctx311_client.py --port /dev/ttyUSB0 los-threshold 850
+  ./vrm315_imlos_client.py --port /dev/ttyUSB0 dump
+  ./vrm315_imlos_client.py --port /dev/ttyUSB0 status
+  ./vrm315_imlos_client.py --port /dev/ttyUSB0 command clear-los
+  ./vrm315_imlos_client.py --port /dev/ttyUSB0 los-threshold 850
 """
 
 import argparse
@@ -99,7 +99,7 @@ SIGNED_REGISTERS = (32, 33, 34, 66, 67, 68)
 RESERVED_REGISTERS = (35, 48)
 
 # Register 48 reads 0 in a release build. A firmware built with
-# -DCTX311_STACK_DEBUG reports minimum free SRAM there instead, for the
+# -DVRM315_STACK_DEBUG reports minimum free SRAM there instead, for the
 # soak run. Seeing it non-zero in the field means a debug image is
 # installed, which is worth saying out loud rather than printing as a
 # puzzling "reserved" value.
@@ -236,8 +236,8 @@ PORT_HINT = "/dev/ttyUSB0"
 def read_all(instrument):
     """Read the whole map, retrying on a corrupted frame.
 
-    64 registers is a 133-byte response, which needs the CTX311 copy of
-    SimpleModbusSlave with BUFFER_SIZE 160. Against the CTX310 copy (128)
+    64 registers is a 133-byte response, which needs the VRM315-IMLOS copy of
+    SimpleModbusSlave with BUFFER_SIZE 160. Against the VRM315-IM copy (128)
     this request times out.
 
     A checksum error is not a device fault -- it means the frame did not
@@ -314,8 +314,8 @@ def as_signed(value):
 def check_map_version(regs):
     """Refuse to run against anything that is not map version 9.
 
-    Same discipline as the CTX310 client, and it matters more here: a
-    CTX310 answering this client would return 49 registers, so registers
+    Same discipline as the VRM315-IM client, and it matters more here: a
+    VRM315-IM answering this client would return 49 registers, so registers
     49-63 would either fail to read or -- worse -- a short read would be
     silently interpreted as a device with no faults and no events.
     """
@@ -325,7 +325,7 @@ def check_map_version(regs):
             "register map version %d, expected %d -- this client would "
             "misinterpret the data. Refusing to continue.%s"
             % (version, EXPECTED_MAP_VERSION,
-               "\nThat looks like a CTX310. Use tools/ctx310_client.py."
+               "\nThat looks like a VRM315-IM. Use tools/vrm315_im_client.py."
                if version == 8 else "")
         )
 
@@ -476,7 +476,7 @@ def print_summary(regs):
         print()
         print("!! register 48 reads %d, not 0."
               % regs[STACK_DEBUG_REG])
-        print("   This device is running a -DCTX311_STACK_DEBUG image and")
+        print("   This device is running a -DVRM315_STACK_DEBUG image and")
         print("   is reporting minimum free SRAM there. That build is for")
         print("   the soak run only -- reflash with a release image before")
         print("   the device goes back into service.")
@@ -660,7 +660,7 @@ def cmd_status(instrument, args):
 
 def cmd_command(instrument, args):
     # Guard the map version before writing anything at all: sending
-    # CLEAR_LOS (0x0004) to a CTX310 would land on a code it does not
+    # CLEAR_LOS (0x0004) to a VRM315-IM would land on a code it does not
     # know, which is harmless, but the next command in the list is not.
     check_map_version(read_all_or_exit(instrument))
     count = send_command(instrument, args.name)
