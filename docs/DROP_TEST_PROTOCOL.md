@@ -396,7 +396,7 @@ fault.
 3. **Power the controller down**, check the sensor harness — supply
    first, then INT1/D2, then CS/SCLK/MOSI/MISO — and reseat it. Never
    connect it to a live board.
-4. Power up and confirm **register 27 ≈ 1589** and **register 49 bit 6
+4. Power up and confirm **register 27 reads 1550–1700** and **register 49 bit 6
    clear** within ~2 s.
 5. Only then `CLEAR_FAULTS`, then `CLEAR_LOS`, in that order. Confirm
    register 49 returns to 0 and the arrest releases.
@@ -460,7 +460,7 @@ non-zero, `CLEAR_LOS` will be **refused** until the fault clears.
 
 If **MISO alone** fails — open wire, or shorted to ground — the ADXL345
 still receives its reads over SCLK/MOSI/CS, still clears DATA_READY, and
-register 27 shows a perfect ~1589 Hz. Only the data coming back is
+register 27 shows a perfectly normal rate. Only the data coming back is
 missing. A grounded MISO reads 0 mg, which is below every threshold, so
 without this check the device would call a severed cable a fall.
 
@@ -468,7 +468,7 @@ without this check the device would call a severed cable a fall.
 
 | Register | Reads |
 |---|---|
-| 27 sample rate | normal, ~1589 Hz — this is why the rate check misses it |
+| 27 sample rate | normal for the unit — this is why the rate check misses it |
 | 60 raw magnitude | **0 mg** (grounded) or ~7 mg (open, pulled high) |
 | 61 fault flags | `0x80` ZERO_DATA, or `0x02` STUCK for the open-high case |
 | 49 LOS status | bit 5 **set** — tripped by fault |

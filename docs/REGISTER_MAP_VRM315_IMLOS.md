@@ -501,7 +501,7 @@ device is actually doing. The whole list is 11 reads, or one sweep.
 | 43 | Map version | **14** | Anything else — refuse to ingest, the register meanings have moved |
 | 61 | **Fault flags** | 0 | Non-zero. The single most important register on the device |
 | 49 | **LOS status** | 0 | bit0 = arrest latched, bit5 = it was a fault not a fall, bit6 = still arming |
-| 27 | Sample rate | ~1589 | Outside 1200–2000 means no usable sample stream |
+| 27 | Sample rate | 1550–1700 | Outside 1200–2000 means no usable sample stream. See the note below on part-to-part spread |
 | 54 | LOS trip count | steady | Any increment is an event to investigate |
 | 73 | Sensor re-inits | **0** | Non-zero = the ADXL345 restarted under the controller. Maintenance finding |
 | 70 | **Supply minimum** | ≥ 4700 mV typ. | Approaching register 71. This is the sag catcher, not register 71 |
@@ -539,7 +539,7 @@ says whether the protective function is armed.
 This is the one accelerometer failure the rate check cannot see. If
 **MISO alone** fails — an open wire, or a short to ground — SCLK, MOSI
 and CS still reach the ADXL345, so it keeps clearing DATA_READY, the
-interrupt keeps arriving, and register 27 shows a perfect 1589 Hz. Every
+interrupt keeps arriving, and register 27 shows a perfectly normal rate. Every
 read returns the idle bus.
 
 A grounded MISO reads 0,0,0 — a magnitude of **0 mg**, which is below

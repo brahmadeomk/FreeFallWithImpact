@@ -427,8 +427,22 @@
    from the measured rate in reg 27: trip timing on a protective
    function must be deterministic, not drift with a live measurement.
    1589 Hz is the figure measured on hardware in rev H
-   (HARDWARE_VALIDATION.md); nominal is 1600. The 0.7% error is
-   immaterial next to threshold tuning uncertainty.                   */
+   (HARDWARE_VALIDATION.md); nominal is 1600.
+
+   DO NOT RE-TUNE THIS FROM A FIELD READING. It is a per-part property
+   masquerading as a constant: a second unit measures 1645, so the
+   spread across two units is 4.4% and 1589 is 3.5% off on that one.
+   An earlier version of this comment called the error 0.7%, which was
+   true of the unit it was measured on and of no other.
+
+   It stays at 1589 anyway. The error is +/-3.5% on trip time with the
+   direction set by the individual part -- on a 1645 part the 50 ms
+   setting confirms in 48.6 ms and the drop from rest is 1.16 cm
+   instead of 1.23 cm -- which is immaterial next to the arrestor
+   sizing margin. Changing it would move trip timing on every deployed
+   unit and invalidate the drop testing already done against it.
+   Registers 55 and 57 carry the same bias and over-report by 3.5% and
+   7.2%; that is recorded in HARDWARE_VALIDATION.md.                   */
 #define LOS_ODR_HZ 1589U
 
 /* Consecutive-sample confirmation works the OPPOSITE way here to
