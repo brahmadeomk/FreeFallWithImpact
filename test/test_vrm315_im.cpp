@@ -1,5 +1,5 @@
 /* =====================================================================
-   Host-side tests for the CTX310 rev H register logic.
+   Host-side tests for the VRM315-IM rev H register logic.
 
    The sketch is included directly, with the AVR core, SPI, EEPROM and
    the ADXL driver replaced by the stubs in test/stubs. Only the parts
@@ -23,15 +23,23 @@
 #include "stubs/Arduino.h"
 #include "stubs/EEPROM.h"
 #include "stubs/SPI.h"
-#include "stubs/SparkFun_ADXL345-master/mFFT_SparkFun_ADXL345.cpp"
+#include "stubs/SparkFun_ADXL345-master/SparkFun_ADXL345.cpp"
 
 uint8_t  DDRC = 0, PORTC = 0, MCUSR = 0;
 uint16_t TCNT1 = 0, TCCR1A = 0, TCCR1B = 0, TIMSK1 = 0;
+uint8_t  ADMUX = 0, ADCSRA = 0;
+uint16_t ADC = 0;
 unsigned long g_millis = 0, g_micros = 0;
 HardwareSerial Serial;
+StubPinEvent   g_pinLog[STUB_PINLOG_CAP];
+int            g_pinLogLen = 0;
 EEPROMClass    EEPROM;
 SPIClass       SPI;
 AdxlFeed       adxlFeed = {0, 0, 256};
+/* Unused by VRM315-IM rev H, which never re-initialises the part -- but the
+   shared stubs reference them, so they need storage here too. */
+int            adxlConfigureCount = 0;
+uint8_t        spiRegs[64] = {0};
 
 /* ---- the half of SimpleModbusSlave the sketch calls into ---- */
 unsigned int modbus_update() { return 0; }
@@ -39,7 +47,7 @@ void modbus_update_comms(long, unsigned char, unsigned char) {}
 void modbus_configure(HardwareSerial *, long, unsigned char, unsigned char,
                       unsigned char, unsigned int, unsigned int *) {}
 
-#include "../CTX310_Vibration_revH/CTX310_Vibration_revH.ino"
+#include "../VRM315_IM_revH/VRM315_IM_revH.ino"
 
 /* ---------------------------- harness ------------------------------ */
 static int failures = 0;

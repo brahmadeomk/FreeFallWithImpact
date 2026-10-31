@@ -1,5 +1,5 @@
 /* =====================================================================
-   VRM315 / CTX 310  --  Triaxial Impact & Vibration Monitor
+   VRM315-IM  --  Triaxial Impact & Vibration Monitor
    Revision H  -  1600 Hz ODR, 0.63 ms impact detection
 
    CHANGES FROM REV G
@@ -222,7 +222,7 @@
 #include <util/atomic.h>
 #include <avr/wdt.h>
 #include "SimpleModbusSlave.h"
-#include "SparkFun_ADXL345-master/mFFT_SparkFun_ADXL345.cpp"
+#include "SparkFun_ADXL345-master/SparkFun_ADXL345.cpp"
 
 /* ------------------------- configuration --------------------------- */
 #define OUTPUT_PORT_BIT   PC0
@@ -237,7 +237,9 @@
 #define THRESHOLD_MAX_MG     15000     /* +/-15 g datasheet figure */
 #define TRIP_HOLD_MS         3000UL
 
+#ifndef ADXL345_INT_DATA_READY_BIT   /* the official driver defines it; the host stub does not */
 #define ADXL345_INT_DATA_READY_BIT 7
+#endif
 
 /* DSP parameters, sized for 1600 Hz */
 #define BLOCK_SIZE      16             /* 10 ms per block */
@@ -503,7 +505,7 @@ static void publishBlock();
    Field unit read 1203 us in reg 19 against that budget.
 
    The result is bit-identical to the (n >> 30) form -- verified over the
-   full uint32 range in test_registers.cpp.                            */
+   full uint32 range in test_vrm315_im.cpp.                            */
 static uint16_t isqrt32(uint32_t n)
 {
   uint32_t rem = 0, root = 0;

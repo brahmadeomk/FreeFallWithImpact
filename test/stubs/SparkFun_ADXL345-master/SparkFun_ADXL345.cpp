@@ -13,10 +13,15 @@
 struct AdxlFeed { int x, y, z; };
 extern AdxlFeed adxlFeed;
 
+/* Counts applySensorConfig() calls, so a test can assert that a
+   recovery actually reconfigured the part rather than just deciding
+   it should have. */
+extern int adxlConfigureCount;
+
 class ADXL345 {
 public:
   ADXL345(int) {}
-  void powerOn() {}
+  void powerOn() { adxlConfigureCount++; }
   void setRangeSetting(int) {}
   void setSpiBit(int) {}
   void set_bw(uint8_t) {}

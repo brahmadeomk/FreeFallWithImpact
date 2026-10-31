@@ -1,4 +1,4 @@
-# CTX310 / VRM315 register map — map version 8 (firmware rev H)
+# VRM315-IM register map — map version 8 (firmware rev H)
 
 Modbus RTU slave, 9600 8N1, default slave ID 71. All registers are
 holding registers (function 3 to read, 6 or 16 to write).
@@ -101,7 +101,7 @@ squared (100 = 1.00 m/s²). All registers are **unsigned** except 32–34.
 | 24 | Effective peak threshold | mg | R | Echo of reg 22 |
 | 25 | Status bits | — | R | bit0 tripped, bit1 impact latched, bit2 block missed, bit3 config defaulted |
 | 26 | Blocks missed | — | R | Cleared by CLEAR_DIAG |
-| 27 | Measured sample rate | samples/s | R | ~1589 measured; nominal 1600 |
+| 27 | Measured sample rate | samples/s | R | 1550–1700 normal; nominal 1600. Varies by part, see the validation log |
 | 28 | Command | — | **W** | Self-clearing trigger, see above |
 | 29 | Reset cause | — | R | Raw AVR `MCUSR` at boot |
 | 30 | Peak vector RMS hold | mg | R | Since last CLEAR_PEAKHOLD |

@@ -34,6 +34,66 @@ period, so `millis()` lost ticks and every rate derived from it read
 high. Once the ISR fitted inside that period the clock became honest.
 1575–1589 is the true ODR, within ADXL345 tolerance of nominal 1600.
 
+## Part-to-part ODR spread
+
+A second unit, installed on a CNC machine, reads **register 27 = 1645,
+varying by ±2 counts**. The reference unit above reads 1575–1589. Both
+are real measurements over Modbus, not simulations.
+
+| Unit | Reg 27 | vs nominal 1600 | vs `LOS_ODR_HZ` (1589) |
+|---|---:|---:|---:|
+| Reference, rev H | 1575–1589 | −1.6 % to −0.7 % | −0.9 % to 0 % |
+| CNC installation | 1645 | +2.8 % | **+3.5 %** |
+
+**So the ODR is a property of the individual part, not of the design.**
+The spread across two units is 4.4 %, which is inside ADXL345 tolerance
+of the nominal 1600 and is not a defect in either unit.
+
+**The ±2 count variation is the measurement floor, not instability.**
+Register 27 divides the interrupt count by the elapsed milliseconds, so
+one sample falling either side of the window boundary is ±1 count, and
+the 1 ms granularity of the elapsed figure is worth another ±1.65 counts
+at this rate. Together that is the ±2 observed. A genuinely unstable
+sample stream would show tens of counts of movement.
+
+### What the spread costs, and why the constant was not changed
+
+`LOS_ODR_HZ` stays at 1589. Invariant 9 requires trip timing to use a
+fixed figure rather than the live measurement, and re-tuning a compiled
+constant on the evidence of one new unit would change trip timing on
+every deployed device and invalidate the drop testing already done.
+
+On a part running at 1645 the effect is small and in the safe direction:
+
+| | Configured | Actual on this part |
+|---|---|---|
+| Confirm time at the 50 ms setting | 50 ms | **48.6 ms** (80 samples) |
+| Confirm time at the 25 ms setting | 25 ms | **24.3 ms** (40 samples) |
+| Drop before the output changes, from rest at 50 ms | 1.226 cm | **1.160 cm** |
+
+A part running *slow* would move these the other way, so the error is
+±3.5 % on trip time with the direction set by the individual part. That
+is immaterial next to the arrestor sizing margin, which is driven by
+descent speed and the arrest device's own engagement time.
+
+Two reported values carry the same bias, both over-reading, because they
+are converted with the fixed constant: **register 55 (duration) reads
++3.5 %** and **register 57 (estimated drop) reads +7.2 %**, since height
+goes with the square of time. Worth knowing when trending them; not
+worth correcting.
+
+### One number that means two different things
+
+**1645 is close to the 1650 that rev F reported, and that was not a fast
+part — it was a lying clock.** Rev F's ISR overran Timer0's overflow
+period, `millis()` lost ticks, and every rate derived from it read high.
+
+Register 27 alone cannot separate the two cases. **Register 19 can:** at
+153–157 µs the ISR fits well inside the overflow period and the clock is
+honest, so a high reg 27 is a genuinely fast part. A much larger reg 19,
+with register 26 climbing faster than about 2 per second, is the rev F
+failure returning. Read reg 19 before accepting any reg 27 above ~1620.
+
 **Register 20 and register 26 are bandwidth, not compute.** 1342 = 134 ms
 is a full 49-register read at 9600 baud, and missed blocks are the
 arithmetic consequence of blocks arriving every 10 ms while the line is

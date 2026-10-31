@@ -1,4 +1,4 @@
-/* Host-side stand-in for the AVR core, used only by test/test_registers.cpp
+/* Host-side stand-in for the AVR core, used only by test/test_vrm315_im.cpp
    so the sketch's register logic can be compiled and exercised on a PC.
    Nothing here is used by the firmware build. */
 #ifndef TEST_STUB_ARDUINO_H
@@ -14,6 +14,18 @@ extern uint8_t  DDRC, PORTC, MCUSR;
 extern uint16_t TCNT1, TCCR1A, TCCR1B, TIMSK1;
 
 #define PC0 0
+#define PC1 1
+#define PC2 2
+
+/* ---- ADC, used only for the internal-bandgap Vcc measurement ---- */
+extern uint8_t  ADMUX, ADCSRA;
+extern uint16_t ADC;
+#define REFS0 6
+#define ADEN  7
+#define ADSC  6
+#define ADPS2 2
+#define ADPS1 1
+#define ADPS0 0
 
 /* Timer1 prescaler bits */
 #define CS10 0
@@ -29,6 +41,9 @@ inline unsigned long micros() { return g_micros; }
 /* ---- pins / interrupts ---- */
 #define INPUT  0
 #define OUTPUT 1
+#define INPUT_PULLUP 2
+#define LOW    0
+#define HIGH   1
 #define RISING 3
 inline void pinMode(uint8_t, uint8_t) {}
 inline int  digitalPinToInterrupt(int pin) { return pin; }
@@ -39,18 +54,46 @@ inline void attachInterrupt(int, void (*)(), int) {}
 
 /* ---- serial ---- */
 #define SERIAL_8N1 0x06
+/* Carries bytes, so test_modbus.cpp can drive the real
+   SimpleModbusSlave through complete frames. The register suites never
+   push anything in, so available() returns 0 for them exactly as the
+   inert version did. */
+#define STUB_SERIAL_CAP 512
 class HardwareSerial {
 public:
+  unsigned char rxBuf[STUB_SERIAL_CAP];
+  int rxHead = 0, rxTail = 0;
+  unsigned char txBuf[STUB_SERIAL_CAP];
+  int txLen = 0;
+
   void begin(long) {}
   void begin(long, uint8_t) {}
-  int  available() { return 0; }
-  int  read() { return -1; }
-  void write(uint8_t) {}
+  int  available() { return rxTail - rxHead; }
+  int  read() { return rxHead < rxTail ? (int)rxBuf[rxHead++] : -1; }
+  void write(uint8_t b) { if (txLen < STUB_SERIAL_CAP) txBuf[txLen++] = b; }
   void flush() {}
+
+  /* test-side helpers */
+  void rxPush(uint8_t b) { if (rxTail < STUB_SERIAL_CAP) rxBuf[rxTail++] = b; }
+  void rxClear() { rxHead = rxTail = 0; }
+  void txClear() { txLen = 0; }
 };
 extern HardwareSerial Serial;
 
 inline void delayMicroseconds(unsigned int) {}
-inline void digitalWrite(uint8_t, uint8_t) {}
+
+/* digitalWrite is recorded against how many bytes have been transmitted
+   so far, so a test can check the RS-485 driver-enable line brackets the
+   frame: asserted before the first byte, released after the last. Getting
+   that wrong truncates frames for every slave on the bus, silently. */
+struct StubPinEvent { uint8_t pin; uint8_t val; int txLenAtTime; };
+#define STUB_PINLOG_CAP 32
+extern StubPinEvent g_pinLog[STUB_PINLOG_CAP];
+extern int g_pinLogLen;
+inline void digitalWrite(uint8_t pin, uint8_t val)
+{
+  if (g_pinLogLen < STUB_PINLOG_CAP)
+    g_pinLog[g_pinLogLen++] = { pin, val, Serial.txLen };
+}
 
 #endif
