@@ -10,6 +10,16 @@ cd "$(dirname "$0")"
 
 CXX_FLAGS="-std=c++11 -Wall -Wextra -Wno-unused-parameter -I stubs"
 
+# The Modbus library itself. The register suites stub it out, so without
+# this pass nothing exercises frame assembly -- which is precisely what
+# failed on a loaded bus.
+echo "=============================================="
+echo " SimpleModbusSlave  (frame assembly)"
+echo "=============================================="
+g++ $CXX_FLAGS -x c++ test_modbus.cpp -o /tmp/vrm315_modbus_tests
+/tmp/vrm315_modbus_tests
+
+echo
 echo "=============================================="
 echo " VRM315-IM rev H  (impact + vibration)"
 echo "=============================================="

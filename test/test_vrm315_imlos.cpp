@@ -46,6 +46,14 @@ int            adxlConfigureCount = 0;
 uint8_t        spiRegs[64] = {0};
 
 /* ---- the half of SimpleModbusSlave the sketch calls into ---- */
+/* The library itself is exercised against the real .cpp in
+   test_modbus.cpp; here it is stubbed so these suites stay about the
+   register semantics. The two counters are settable so publishBlock's
+   handling of registers 74 and 75 can be checked. */
+unsigned int g_modbusErrors = 0, g_modbusRequests = 0;
+unsigned int modbus_error_count()   { return g_modbusErrors; }
+unsigned int modbus_request_count() { return g_modbusRequests; }
+void modbus_reset_diagnostics()     { g_modbusErrors = 0; g_modbusRequests = 0; }
 unsigned int modbus_update() { return 0; }
 void modbus_update_comms(long, unsigned char, unsigned char) {}
 void modbus_configure(HardwareSerial *, long, unsigned char, unsigned char,
@@ -281,8 +289,9 @@ static void test_identification_registers()
   /* 12 -> 13: FAULT_ZERO_DATA occupies reg 61 bit 7. A map-12 master
      decodes that register bit by bit and has no case for bit 7, so it
      would read a dead sensor bus as no fault at all.
-     13 -> 14: register 73 appended. */
-  CHECK_EQ(holdingRegs[MapVersionReg], 14, "reg 43 map version");
+     13 -> 14: register 73 appended.
+     14 -> 15: registers 74-75 appended. */
+  CHECK_EQ(holdingRegs[MapVersionReg], 15, "reg 43 map version");
   CHECK_EQ(holdingRegs[FwVersionReg], (2 << 8) | 1, "reg 42 firmware version");
   CHECK(holdingRegs[BuildDateReg] != 0, "reg 44 build date is populated");
 
@@ -1014,6 +1023,31 @@ static void test_recovery_does_not_rearm_the_arrest()
   CHECK(PORTC & (1 << LOS_PORT_BIT), "arrest released only then");
 }
 
+static void test_modbus_diagnostics_publish_and_clear()
+{
+  printf("MODBUS: registers 74 and 75 publish bus health, CLEAR_DIAG resets\n");
+  armed();
+
+  g_modbusErrors = 7; g_modbusRequests = 1234;
+  publishBlock();
+  CHECK_EQ(holdingRegs[ModbusErrorsReg], 7, "reg 74 publishes the error count");
+  CHECK_EQ(holdingRegs[ModbusRequestsReg], 1234, "reg 75 publishes requests served");
+
+  holdingRegs[CommandReg] = CMD_CLEAR_DIAG;
+  checkCommandRegister();
+  CHECK_EQ(g_modbusErrors, 0, "CLEAR_DIAG zeroes the error count");
+  CHECK_EQ(g_modbusRequests, 0, "CLEAR_DIAG zeroes the request count");
+
+  publishBlock();
+  CHECK_EQ(holdingRegs[ModbusErrorsReg], 0, "and reg 74 follows");
+  CHECK_EQ(holdingRegs[ModbusRequestsReg], 0, "and reg 75 follows");
+
+  /* They are read-only: a master writing them must not stick. */
+  holdingRegs[ModbusErrorsReg] = 999;
+  publishBlock();
+  CHECK_EQ(holdingRegs[ModbusErrorsReg], 0, "reg 74 is read-only");
+}
+
 static void test_live_data_does_not_raise_stuck()
 {
   printf("DIAG: normal dithering data does not raise a false fault\n");
@@ -1645,6 +1679,7 @@ int main()
   test_latched_data_ready_is_recovered();
   test_unfixable_wiring_never_counts();
   test_recovery_does_not_rearm_the_arrest();
+  test_modbus_diagnostics_publish_and_clear();
   test_live_data_does_not_raise_stuck();
   test_advisory_faults_do_not_engage_the_arrest();
   test_plausibility_suspended_during_an_event();

@@ -698,6 +698,9 @@
        9..12 = VRM315-IMLOS rev A -- loss-of-support registers, arming
                    window, tilt, supply monitoring. Tabulated in
                    docs/REGISTER_MAP_VRM315_IMLOS.md rather than here.
+      15 = +regs 74-75, Modbus error and request counters. Appended,
+                   so a map-14 master cannot misread what it already
+                   reads, but the sweep grows by two registers.
       14 = +reg 73, count of ADXL345 re-initialisations. Appended, so
                    a map-13 master cannot misread what it already reads,
                    but the sweep grows by one register and the version
@@ -727,7 +730,7 @@
    Register 44 only separates builds made on different days. */
 #define FW_VERSION_MINOR      1
 #define FW_VERSION_PACKED     (((FW_VERSION_MAJOR) << 8) | (FW_VERSION_MINOR))
-#define REGISTER_MAP_VERSION  14
+#define REGISTER_MAP_VERSION  15
 
 #define BUILD_YEAR  ((__DATE__[7]-'0')*1000 + (__DATE__[8]-'0')*100 + \
                      (__DATE__[9]-'0')*10   + (__DATE__[10]-'0'))
@@ -870,6 +873,14 @@ enum
                               unconfigured and re-initialised. Should
                               be 0. Non-zero means the part restarted
                               under a running controller.             */
+  /* ---- map version 15: Modbus bus health ---- */
+  ModbusErrorsReg,     /* 74 CRC failures, short frames, overflows and
+                              exception responses since boot or
+                              CLEAR_DIAG. Should stay 0.              */
+  ModbusRequestsReg,   /* 75 CRC-valid frames addressed to THIS slave
+                              since boot or CLEAR_DIAG. Compare with
+                              what the master believes it sent: the
+                              difference is frames lost on the wire.  */
   HOLDING_REGS_SIZE
 };
 
@@ -1476,7 +1487,10 @@ void checkCommandRegister()
     case CMD_CLEAR_DIAG:
       /* The supply minimum is a diagnostic high-water like reg 20 and
          reg 26, so it belongs to the same clear rather than needing a
-         command of its own. */
+         command of its own. The Modbus counters join it for the same
+         reason -- what matters is the rate since you last looked, not
+         a total since the unit was built. */
+      modbus_reset_diagnostics();
       vccMinMv = vccMv;
       ATOMIC_BLOCK(ATOMIC_RESTORESTATE) {
         isrMaxTicks = 0;
@@ -2679,6 +2693,8 @@ static void publishBlock()
   holdingRegs[FaultReg]           = faultFlags;
   holdingRegs[BootCheckReg]       = bootState;
   holdingRegs[SensorReinitReg]    = sensorReinitCount;
+  holdingRegs[ModbusErrorsReg]    = modbus_error_count();
+  holdingRegs[ModbusRequestsReg]  = modbus_request_count();
 
   {
     uint8_t ts = 0;

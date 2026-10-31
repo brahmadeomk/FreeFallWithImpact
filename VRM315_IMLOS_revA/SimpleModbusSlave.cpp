@@ -18,7 +18,12 @@
 // protocol limit. The Arduino TX buffer is unaffected: write() blocks
 // when full rather than dropping bytes, and flush() waits for completion.
 // Costs 64 bytes of SRAM; total static use is ~558 B of 2048 B.
-#define BUFFER_SIZE 160
+// Raised 160 -> 192 for map 15. A 76-register sweep is 5 + 2*76 = 157
+// bytes, which fitted 160 with three bytes to spare -- a cliff the next
+// register would have gone over. 192 restores room for 17 more and
+// costs 32 B of SRAM against ~940 B free. Taken deliberately, with the
+// figures, rather than drifted into.
+#define BUFFER_SIZE 192
 
 // frame[] is used to recieve and transmit packages.
 
@@ -30,12 +35,14 @@ unsigned char slaveID;
 unsigned char function;
 unsigned char TxEnablePin;
 unsigned int errorCount;
+unsigned int requestCount;   // CRC-valid frames addressed to us
 unsigned int T1_5; // inter character time out
 unsigned int T3_5; // frame delay
 HardwareSerial* ModbusPort;
 
 // function definitions
 void exceptionResponse(unsigned char exception);
+static void rxReset();                 // defined with the receive state below
 unsigned int calculateCRC(unsigned char bufferSize);
 void sendPacket(unsigned char bufferSize);
 
@@ -55,6 +62,8 @@ void modbus_configure(HardwareSerial *SerialPort,
   pinMode(TxEnablePin, OUTPUT);
   digitalWrite(TxEnablePin, LOW);
   errorCount = 0; // initialize errorCount
+  requestCount = 0;
+  rxReset();
 }
 
 void modbus_update_comms(long baud, unsigned char byteFormat, unsigned char _slaveID)
@@ -83,45 +92,113 @@ void modbus_update_comms(long baud, unsigned char byteFormat, unsigned char _sla
   }
 }
 
+/* ===================================================================
+   PATCH (rev A, map 15): NON-BLOCKING RECEIVE.
+
+   The original drained the UART with delayMicroseconds(T1_5) after
+   EVERY byte -- 1562 us each at 9600 baud -- and only looked at the
+   slave ID once the whole frame was buffered. Three things followed,
+   and all of them got worse as slaves were added to the bus:
+
+   1. Every slave paid that cost for every frame on the bus, its own
+      and everybody else's, because a multi-drop receiver hears the
+      lot. A 15-byte poll exchange kept every slave busy 31 ms against
+      15.6 ms of actual wire time.
+
+   2. The drain was slower than the arrival rate -- 1562 us per byte
+      against 1042 us -- so the ring buffer grew during any burst and
+      only emptied in the gaps. With the ADXL345 interrupt taking
+      24.3% of the CPU the real figure was 2060 us, because
+      delayMicroseconds() burns cycles and does not know interrupts
+      exist, so every ISR stretches it. Drain against arrival was
+      2:1.
+
+   3. Worst of all, the receive loop treated everything it drained in
+      one pass as ONE frame keyed on the first byte. A slave still
+      draining when the next request arrived appended that request to
+      a frame already carrying somebody else's ID -- and discarded
+      its own request. That is a silent, permanent-looking
+      disconnection, and it needed ~15 ms of bus silence after every
+      poll to avoid.
+
+   This version never blocks. It takes whatever has arrived, remembers
+   when the last byte landed, and declares the frame complete after
+   T3_5 of silence -- which is what the Modbus specification actually
+   asks for. The required gap between frames drops from ~15 ms to the
+   spec's 3.645 ms, the ring buffer is drained every loop() pass
+   instead of once per frame, and the ISR no longer inflates anything
+   because there is nothing left to inflate.
+
+   The slave ID is now read from byte 0, so a frame addressed to
+   another slave is counted and dropped rather than buffered.
+   =================================================================== */
+static unsigned int  rxSeen     = 0;   // bytes in this frame, stored or not
+static unsigned char rxStored   = 0;   // bytes actually placed in frame[]
+static unsigned long rxLastUs   = 0;   // micros() of the most recent byte
+static unsigned char rxOverflow = 0;
+static unsigned char rxForeign  = 0;   // byte 0 was not our ID or broadcast
+
+static void rxReset()
+{
+  rxSeen = 0; rxStored = 0; rxOverflow = 0; rxForeign = 0;
+}
+
+unsigned int modbus_error_count()   { return errorCount; }
+unsigned int modbus_request_count() { return requestCount; }
+
+void modbus_reset_diagnostics()
+{
+  errorCount = 0;
+  requestCount = 0;
+}
+
 unsigned int modbus_update()
 {
-  if ((*ModbusPort).available())
+  // ---- take everything the UART has, without waiting for anything ----
+  while ((*ModbusPort).available())
   {
-    unsigned char buffer = 0;
-    unsigned char overflow = 0;
+    unsigned char b = (unsigned char)(*ModbusPort).read();
+    rxLastUs = micros();
 
-    while ((*ModbusPort).available())
+    // Byte 0 decides whether this frame is worth storing at all.
+    if (rxSeen == 0)
+      rxForeign = (b != slaveID && b != 0);
+
+    if (rxSeen < 0xFFFFU)
+      rxSeen++;
+
+    if (!rxForeign && !rxOverflow)
     {
-      // If more bytes is received than the BUFFER_SIZE the overflow flag will be set and the
-      // serial buffer will be red untill all the data is cleared from the receive buffer.
-      if (overflow)
-        (*ModbusPort).read();
+      if (rxStored < BUFFER_SIZE)
+        frame[rxStored++] = b;
       else
-      {
-        // PATCH (rev F): the original set the overflow flag but STILL wrote
-        // frame[buffer] on the same pass, writing one byte past the end of
-        // the array. Harmless until a noisy line fills the buffer, at which
-        // point it corrupts whatever follows frame[] in RAM.
-        if (buffer == BUFFER_SIZE)
-        {
-          overflow = 1;
-          (*ModbusPort).read();   // discard, do not write past the array
-        }
-        else
-        {
-          frame[buffer] = (*ModbusPort).read();
-          buffer++;
-        }
-      }
-      delayMicroseconds(T1_5); // inter character time out
+        rxOverflow = 1;   // never write past the array
     }
+  }
 
-    // If an overflow occurred increment the errorCount
-    // variable and return to the main sketch without
-    // responding to the request i.e. force a timeout
-    if (overflow)
-      return errorCount++;
+  // ---- a frame ends on silence, not on a per-byte delay ----
+  if (rxSeen == 0)
+    return errorCount;
 
+  if ((unsigned long)(micros() - rxLastUs) < (unsigned long)T3_5)
+    return errorCount;          // still arriving; come back next loop()
+
+  unsigned char buffer   = rxStored;
+  unsigned char overflow = rxOverflow;
+  unsigned char foreign  = rxForeign;
+  rxReset();
+
+  // Addressed to another slave. Not an error -- just not ours.
+  if (foreign)
+    return errorCount;
+
+  // If an overflow occurred increment the errorCount
+  // variable and return to the main sketch without
+  // responding to the request i.e. force a timeout
+  if (overflow)
+    return errorCount++;
+
+  {
     // The minimum request packet is 8 bytes for function 3 & 16
     if (buffer > 7)
     {
@@ -137,6 +214,7 @@ unsigned int modbus_update()
         unsigned int crc = ((frame[buffer - 2] << 8) | frame[buffer - 1]); // combine the crc Low & High bytes
         if (calculateCRC(buffer - 2) == crc) // if the calculated crc matches the recieved crc continue
         {
+          if (requestCount < 0xFFFFU) requestCount++;
           function = frame[1];
           unsigned int startingAddress = ((frame[2] << 8) | frame[3]); // combine the starting address bytes
           unsigned int no_of_registers = ((frame[4] << 8) | frame[5]); // combine the number of register bytes
@@ -336,4 +414,11 @@ void sendPacket(unsigned char bufferSize)
   delayMicroseconds(T3_5);
 
   digitalWrite(TxEnablePin, LOW);
+
+  // PATCH (map 15): throw away anything the UART caught while we were
+  // driving the bus. Where /RE is not tied to DE the slave hears its
+  // own frame, and that frame starts with our own ID -- so without
+  // this it would be parsed as a request and fail CRC, once per reply.
+  while ((*ModbusPort).available()) (*ModbusPort).read();
+  rxReset();
 }

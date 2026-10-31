@@ -54,14 +54,29 @@ inline void attachInterrupt(int, void (*)(), int) {}
 
 /* ---- serial ---- */
 #define SERIAL_8N1 0x06
+/* Carries bytes, so test_modbus.cpp can drive the real
+   SimpleModbusSlave through complete frames. The register suites never
+   push anything in, so available() returns 0 for them exactly as the
+   inert version did. */
+#define STUB_SERIAL_CAP 512
 class HardwareSerial {
 public:
+  unsigned char rxBuf[STUB_SERIAL_CAP];
+  int rxHead = 0, rxTail = 0;
+  unsigned char txBuf[STUB_SERIAL_CAP];
+  int txLen = 0;
+
   void begin(long) {}
   void begin(long, uint8_t) {}
-  int  available() { return 0; }
-  int  read() { return -1; }
-  void write(uint8_t) {}
+  int  available() { return rxTail - rxHead; }
+  int  read() { return rxHead < rxTail ? (int)rxBuf[rxHead++] : -1; }
+  void write(uint8_t b) { if (txLen < STUB_SERIAL_CAP) txBuf[txLen++] = b; }
   void flush() {}
+
+  /* test-side helpers */
+  void rxPush(uint8_t b) { if (rxTail < STUB_SERIAL_CAP) rxBuf[rxTail++] = b; }
+  void rxClear() { rxHead = rxTail = 0; }
+  void txClear() { txLen = 0; }
 };
 extern HardwareSerial Serial;
 

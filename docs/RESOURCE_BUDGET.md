@@ -17,7 +17,7 @@ ring buffers, the Modbus frame buffer, the register array — and not by
 the sketch's own declarations, which are what you see when you read the
 source.
 
-The estimate was low. Built figure below: **1108 B for VRM315-IMLOS**, 79 %
+The estimate was low. Built figure below: **1155 B for VRM315-IMLOS**, 86 %
 above the estimate.
 
 ## Figures
@@ -27,14 +27,14 @@ Arduino Nano, ATmega328P, 16 MHz. 32256 B flash available to the sketch
 
 | | VRM315-IM rev H | VRM315-IMLOS rev A |
 |---|---:|---:|
-| Flash (`.text` + `.data`) | 14678 B (44.8 %) | 20656 B (63.0 %) |
-| Static SRAM (`.data` + `.bss`) | 916 B (44.7 %) | **1108 B (54.1 %)** |
-| Free SRAM (static) | 1132 B (55 %) | **940 B (46 %)** |
-| `.text` | 14620 B | 20580 B |
+| Flash (`.text` + `.data`) | 14924 B (45.5 %) | 20968 B (64.0 %) |
+| Static SRAM (`.data` + `.bss`) | 927 B (45.3 %) | **1155 B (56.4 %)** |
+| Free SRAM (static) | 1121 B (55 %) | **893 B (44 %)** |
+| `.text` | 14866 B | 20892 B |
 | `.data` | 58 B | 76 B |
-| `.bss` | 858 B | 1032 B |
+| `.bss` | 869 B | 1079 B |
 
-VRM315-IMLOS costs **+5978 B flash and +192 B static SRAM** over VRM315-IM. The
+VRM315-IMLOS costs **+6044 B flash and +228 B static SRAM** over VRM315-IM. The
 SRAM delta is mostly the raised `BUFFER_SIZE` (128 → 160, +32 B) plus the
 loss-of-support state and the extra registers.
 
@@ -59,16 +59,24 @@ runs entirely on the 1 Hz tick in `loop()`. That includes the
 DATA_READY clear and the verify-then-count state machine added after
 the first field test.
 
-**Watch the Modbus buffer, not the SRAM.** A full sweep is now 74
-registers = **153 bytes**, against `BUFFER_SIZE` 160 — **7 bytes spare**,
-so three more registers. SRAM is not the binding constraint here;
-the frame is. Raising `BUFFER_SIZE` is affordable on these figures, but
-it was listed out of scope in the work package pending exactly these
-numbers, so it is a decision to take deliberately rather than by
-drifting into it.
+**The Modbus buffer was raised, deliberately.** A full sweep is now 76
+registers = **157 bytes**. That fitted the old `BUFFER_SIZE` of 160 with
+three bytes to spare — a cliff the next register would have gone over —
+so it is now **192**, leaving **35 bytes spare**, room for 17 more
+registers. It costs 32 B of SRAM against 893 B free. The work package
+listed this as out of scope pending exactly these figures; this is that
+decision taken, with the numbers, rather than drifted into.
 
 Figures include the T-05 arming-window change (+50 B flash, no SRAM
 change).
+
+The non-blocking Modbus receive and its two diagnostic registers
+(map 15) add **+312 B flash and +47 B SRAM** to VRM315-IMLOS, of which
+32 B is the raised frame buffer. VRM315-IM takes the same receive path
+without the registers: **+246 B flash and +11 B SRAM**. None of it is in
+the ISR, and the change *removes* work rather than adding it — the old
+receive loop blocked 1562 µs per byte — so the flash buys back a large
+amount of CPU on a busy bus.
 
 ### Where the ISR time goes
 
@@ -88,7 +96,7 @@ sustained figure.
 
 ## What "free SRAM" here does and does not mean
 
-The 940 B above is **static** free SRAM. It is the space the stack has
+The 893 B above is **static** free SRAM. It is the space the stack has
 to live in, not headroom known to be spare. It does not say how much of
 that the stack actually consumes — the deepest path is an ISR firing on
 top of `loop()` inside a Modbus response. The instrumentation below
@@ -126,8 +134,8 @@ flag.
 
 | Build | Flash | Static SRAM | `stackPaint` in image |
 |---|---:|---:|---|
-| release | 20656 B | 1108 B | absent |
-| `-DVRM315_STACK_DEBUG` | 20702 B (+46 B) | 1108 B (no change) | present |
+| release | 20968 B | 1155 B | absent |
+| `-DVRM315_STACK_DEBUG` | 21014 B (+46 B) | 1155 B (no change) | present |
 
 Verified in the linked image rather than assumed: the painter survives
 `--gc-sections`, loads `Z = _end` (0x0512), the canary `0xC5`, and loops
@@ -137,7 +145,7 @@ stored to `holdingRegs+0x60`, which is register 48.
 `test/run_tests.sh` builds and runs the VRM315-IMLOS suite a third time with
 the flag on. The guarded code is invisible to a normal build, so that
 pass is what stops it rotting; and because the host stub returns 0, all
-272 assertions must still hold — if that pass ever diverges, the debug
+279 assertions must still hold — if that pass ever diverges, the debug
 build has started changing behaviour it should not.
 
 **The number itself still needs hardware.** Nothing here has been

@@ -36,8 +36,8 @@ import math
 import sys
 import time
 
-EXPECTED_MAP_VERSION = 14
-REGISTER_COUNT = 74
+EXPECTED_MAP_VERSION = 15
+REGISTER_COUNT = 76
 
 # register indices used by name
 SLAVE_ID = 21
@@ -81,6 +81,8 @@ VCC_INVALID = 0xFFFF
 SUPPLY_MIN = 71         # R/W advisory limit, mV, 0 = disabled
 SUPPLY_MIN_EFF = 72
 SENSOR_REINIT = 73      # times the ADXL345 has been re-initialised
+MODBUS_ERRORS = 74      # CRC failures, runts, overflows, exceptions
+MODBUS_REQUESTS = 75    # CRC-valid frames addressed to this slave
 
 # Register 65 bits.
 TILT_STATUS_BITS = (
@@ -195,6 +197,8 @@ NAMES = {
     71: "supply advisory limit (mV, 0=off) [R/W]",
     72: "supply limit effective (mV)",
     73: "ADXL345 re-initialisations (should be 0)",
+    74: "Modbus errors (should be 0)",
+    75: "Modbus requests served",
 }
 
 

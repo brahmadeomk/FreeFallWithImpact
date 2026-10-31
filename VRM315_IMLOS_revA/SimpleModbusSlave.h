@@ -59,6 +59,15 @@
 
 // function definitions
 unsigned int modbus_update();
+
+// PATCH (map 15): bus health, for publication in the register map.
+// errorCount counts CRC failures, short frames, buffer overflows and
+// exception responses. requestCount counts CRC-valid frames addressed
+// to this slave. Comparing requestCount against what the master
+// believes it sent is how you see frames being lost on the wire.
+unsigned int modbus_error_count();
+unsigned int modbus_request_count();
+void         modbus_reset_diagnostics();
 void modbus_update_comms(long baud, unsigned char byteFormat, unsigned char _slaveID);
 void modbus_configure(HardwareSerial *SerialPort,
 											long baud,

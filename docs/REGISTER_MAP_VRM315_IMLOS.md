@@ -1,4 +1,4 @@
-# VRM315-IMLOS register map — map version 14 (firmware rev A)
+# VRM315-IMLOS register map — map version 15 (firmware rev A)
 
 Modbus RTU slave, 9600 8N1, default slave ID 71. All registers are
 holding registers (function 3 to read, 6 or 16 to write).
@@ -7,7 +7,8 @@ holding registers (function 3 to read, 6 or 16 to write).
 (9 added the loss-of-support block, 10 tilt in 64–68, 11 supply
 monitoring in 69–70, 12 the low-supply advisory in 71–72, 13 the
 sensor-communication fault in register 61 bit 7, 14 the sensor
-re-initialisation count in register 73). A
+re-initialisation count in register 73, 15 the Modbus counters in
+registers 74–75). A
 VRM315-IM master expecting version 8 must refuse to ingest — and VRM315-IMLOS changes
 more than the map, so this check matters more than it did before.
 
@@ -114,7 +115,7 @@ commissioning question about whether a reset can occur under load.
 |---|---|
 | Impact threshold floor raised 10 → **1200 mg** | An existing config below 1200 mg is rejected into defaults on first boot. Check register 22 after upgrading |
 | Status register 25 **bit 2 removed** | Dashboards keying on it must be updated. It re-latched within seconds of any clear, so it was a permanent fault light for normal polling. Register 26 remains the counter |
-| Registers 49–73 added | Response is now 153 bytes for a full sweep; library `BUFFER_SIZE` raised 128 → 160, leaving **7 bytes spare** |
+| Registers 49–75 added | Response is now 157 bytes for a full sweep; library `BUFFER_SIZE` raised 128 → 192, leaving **35 bytes spare** |
 | Watchdog **enabled** | A hung device now resets instead of holding the output wherever it was. Register 29 will show WDRF and register 61 will latch `FAULT_WDT_RESET` |
 | EEPROM offsets 0–6 unchanged | Slave ID and impact threshold survive the upgrade, as they did across G→H |
 
@@ -175,7 +176,7 @@ only — see `docs/RESOURCE_BUDGET.md`. If a device in the field reads
 non-zero at register 48, it is running a debug build and should be
 reflashed with a release image.
 
-## New registers (49–73)
+## New registers (49–75)
 
 | Reg | Name | Access | Units / notes |
 |---|---|---|---|
@@ -204,6 +205,8 @@ reflashed with a release image.
 | 71 | Low-supply limit | **R/W** | mV, 3000–5500, **0 = disabled**. Default 4500 |
 | 72 | Low-supply limit effective | R | echo of 71 |
 | 73 | **ADXL345 re-initialisations** | R | Count of times the part was found restarted and reconfigured. **Should be 0** — see below |
+| 74 | **Modbus errors** | R | CRC failures, short frames, buffer overflows and exception responses. Cleared by `CLEAR_DIAG` |
+| 75 | **Modbus requests served** | R | CRC-valid frames addressed to this slave. Cleared by `CLEAR_DIAG` |
 
 ### Register 56 is the one to trend
 
@@ -520,6 +523,45 @@ Registers 0–2 (10 ms per-axis RMS) and 38–41 (1 s per-axis and vector
 RMS) are the vibration data. Useful, and worth baselining at
 commissioning while the machine is in a known state — but none of them
 says whether the protective function is armed.
+
+## Registers 74 and 75 — is the bus actually working
+
+These two exist because a slave that is being talked over looks exactly
+like a slave that is switched off, and until now the device had no way
+to tell you which.
+
+| Reg | Counts | Healthy |
+|---|---|---|
+| 74 | CRC failures, short frames, buffer overflows, exception responses | 0, and staying 0 |
+| 75 | CRC-valid frames addressed to **this** slave | rising in step with what the master sent |
+
+**Read 75 against what the master believes it sent.** If the master
+logged 1000 requests to this slave and register 75 advanced by 820, then
+180 requests never reached it as a clean frame — they were corrupted,
+collided, or ran into the frame before them. That is a bus problem, not
+a sensor problem, and no other register will tell you.
+
+**Register 74 separates the causes.** Rising alongside the shortfall
+means frames are arriving damaged: noise, reflections, missing
+termination or bias. Staying at 0 while 75 falls short means frames are
+not arriving at all: the master is addressing someone else, or the
+request is being merged into the frame ahead of it.
+
+Both are cleared by `CLEAR_DIAG`, so the useful measurement is the rate
+since you last cleared, not a total since the unit was built.
+
+### Frame timing on a multi-drop bus
+
+The slave declares a frame complete after **3.5 character times of
+silence** — 3.645 ms at 9600 baud — as the Modbus specification asks.
+**The master must leave at least that much gap between frames.** A
+master that runs frames together produces one unparseable run, and the
+slave rejects the lot rather than acting on half of it.
+
+Earlier firmware needed far more than the specified gap, because its
+receive path blocked for 1562 µs per byte and fell behind on a loaded
+bus. If you widened the master's inter-poll delay to work around
+disconnections, you can take it back to the specification figure.
 
 ## Fault flags (register 61)
 
