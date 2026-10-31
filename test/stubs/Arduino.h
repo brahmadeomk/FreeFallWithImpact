@@ -81,6 +81,19 @@ public:
 extern HardwareSerial Serial;
 
 inline void delayMicroseconds(unsigned int) {}
-inline void digitalWrite(uint8_t, uint8_t) {}
+
+/* digitalWrite is recorded against how many bytes have been transmitted
+   so far, so a test can check the RS-485 driver-enable line brackets the
+   frame: asserted before the first byte, released after the last. Getting
+   that wrong truncates frames for every slave on the bus, silently. */
+struct StubPinEvent { uint8_t pin; uint8_t val; int txLenAtTime; };
+#define STUB_PINLOG_CAP 32
+extern StubPinEvent g_pinLog[STUB_PINLOG_CAP];
+extern int g_pinLogLen;
+inline void digitalWrite(uint8_t pin, uint8_t val)
+{
+  if (g_pinLogLen < STUB_PINLOG_CAP)
+    g_pinLog[g_pinLogLen++] = { pin, val, Serial.txLen };
+}
 
 #endif

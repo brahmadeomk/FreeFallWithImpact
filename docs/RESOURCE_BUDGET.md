@@ -27,10 +27,10 @@ Arduino Nano, ATmega328P, 16 MHz. 32256 B flash available to the sketch
 
 | | VRM315-IM rev H | VRM315-IMLOS rev A |
 |---|---:|---:|
-| Flash (`.text` + `.data`) | 14924 B (45.5 %) | 20968 B (64.0 %) |
+| Flash (`.text` + `.data`) | 14920 B (45.5 %) | 20964 B (64.0 %) |
 | Static SRAM (`.data` + `.bss`) | 927 B (45.3 %) | **1155 B (56.4 %)** |
 | Free SRAM (static) | 1121 B (55 %) | **893 B (44 %)** |
-| `.text` | 14866 B | 20892 B |
+| `.text` | 14862 B | 20888 B |
 | `.data` | 58 B | 76 B |
 | `.bss` | 869 B | 1079 B |
 
@@ -134,8 +134,8 @@ flag.
 
 | Build | Flash | Static SRAM | `stackPaint` in image |
 |---|---:|---:|---|
-| release | 20968 B | 1155 B | absent |
-| `-DVRM315_STACK_DEBUG` | 21014 B (+46 B) | 1155 B (no change) | present |
+| release | 20964 B | 1155 B | absent |
+| `-DVRM315_STACK_DEBUG` | 21010 B (+46 B) | 1155 B (no change) | present |
 
 Verified in the linked image rather than assumed: the painter survives
 `--gc-sections`, loads `Z = _end` (0x0512), the canary `0xC5`, and loops

@@ -563,6 +563,14 @@ receive path blocked for 1562 µs per byte and fell behind on a loaded
 bus. If you widened the master's inter-poll delay to work around
 disconnections, you can take it back to the specification figure.
 
+**Response latency is about 3.6 ms** from the last byte of the request
+to the first byte of the reply, plus one firmware loop pass. That is the
+frame-gap measurement itself and nothing else: the slave transmits as
+soon as it has established the line is quiet. Size the master's timeout
+against that plus the reply's own transmission time — a one-register
+reply is seven bytes, 7.3 ms at 9600 baud — and leave generous margin;
+100 ms is a sensible floor.
+
 ## Fault flags (register 61)
 
 | Bit | Name | Detection lost? | Meaning |

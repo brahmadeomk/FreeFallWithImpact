@@ -31,6 +31,8 @@ uint8_t  ADMUX = 0, ADCSRA = 0;
 uint16_t ADC = 0;
 unsigned long g_millis = 0, g_micros = 0;
 HardwareSerial Serial;
+StubPinEvent   g_pinLog[STUB_PINLOG_CAP];
+int            g_pinLogLen = 0;
 EEPROMClass    EEPROM;
 SPIClass       SPI;
 AdxlFeed       adxlFeed = {0, 0, 256};

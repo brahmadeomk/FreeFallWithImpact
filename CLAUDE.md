@@ -22,7 +22,7 @@ docs/RESOURCE_BUDGET.md           built flash/SRAM figures
 test/run_tests.sh                 builds and runs ALL FOUR passes
 test/test_vrm315_im.cpp           VRM315-IM, 79 checks
 test/test_vrm315_imlos.cpp        VRM315-IMLOS, 279 checks
-test/test_modbus.cpp              SimpleModbusSlave frames, 54 checks
+test/test_modbus.cpp              SimpleModbusSlave frames, 61 checks
 test/stubs/                       host stand-ins for core, SPI, EEPROM, ADXL
 tools/vrm315_im_client.py         Modbus client, map v8
 tools/vrm315_imlos_client.py      Modbus client, map v15
@@ -43,7 +43,7 @@ directory first. `tools/build_avr.sh` copies it in for AVR builds.
 ```
 
 No AVR toolchain needed — the stubs let both sketches compile and run on
-the host. Current state: **54 + 79 + 279 + 279 checks, 0 failures** — the
+the host. Current state: **61 + 79 + 279 + 279 checks, 0 failures** — the
 third pass is the IMLOS suite rebuilt with `-DVRM315_STACK_DEBUG`. All
 three must stay green.
 

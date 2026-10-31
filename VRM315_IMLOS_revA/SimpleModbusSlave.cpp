@@ -404,13 +404,34 @@ unsigned int calculateCRC(unsigned char bufferSize)
 void sendPacket(unsigned char bufferSize)
 {
   digitalWrite(TxEnablePin, HIGH);
-  delayMicroseconds(T3_5);
+
+  // PATCH (map 15): the T3_5 that used to sit here is gone.
+  //
+  // Its job was to guarantee 3.5 character times of silence before the
+  // reply, which the Modbus specification requires between frames. The
+  // receive path now provides that guarantee itself -- it will not
+  // declare a frame complete, and so will never reach this function,
+  // until it has measured T3_5 of silence. Keeping the delay here
+  // bought a second helping of a gap that had already happened, and
+  // charged 3.645 ms of response latency for it.
+  //
+  // What is genuinely needed is driver-enable settling: a MAX485 takes
+  // tens to a few hundred nanoseconds from DE going high to the driver
+  // being active. 10 us is three orders of magnitude of margin, and in
+  // practice digitalWrite() plus the first write() already cover it.
+  delayMicroseconds(10);
+
   for (unsigned char i = 0; i < bufferSize; i++)
     (*ModbusPort).write(frame[i]);
 
   (*ModbusPort).flush();
 
-  // allow a frame delay to indicate end of transmission
+  // The post-transmit delay STAYS. flush() above waits on TXC0, so the
+  // last stop bit really is on the wire by now and this is not needed
+  // for correctness -- but dropping DE early truncates the final byte
+  // for every slave on the bus, and that failure is silent and
+  // intermittent. It is the one place on this path where insurance is
+  // worth more than the microseconds it costs.
   delayMicroseconds(T3_5);
 
   digitalWrite(TxEnablePin, LOW);

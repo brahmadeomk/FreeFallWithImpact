@@ -31,6 +31,8 @@ uint8_t  ADMUX = 0, ADCSRA = 0;
 uint16_t ADC = 0;
 unsigned long g_millis = 0, g_micros = 0;
 HardwareSerial Serial;
+StubPinEvent   g_pinLog[STUB_PINLOG_CAP];
+int            g_pinLogLen = 0;
 
 /* ---- the sketch side of the library's two callbacks ---- */
 static int sensorDataCalls = 0;
@@ -141,6 +143,7 @@ static void reset()
   for (unsigned int i = 0; i < TEST_REGS; i++) testRegs[i] = 0x1000 + i;
   modbus_configure(&Serial, 9600, SERIAL_8N1, SLAVE_ID, 2, TEST_REGS, testRegs);
   sensorDataCalls = readCompleteCalls = 0;
+  g_pinLogLen = 0;
   g_micros = 1000000;
 }
 
@@ -372,6 +375,50 @@ static void test_read_complete_hook_fires_after_the_frame()
   CHECK_EQ(lastReadQty, 3, "hook told the quantity");
 }
 
+static void test_driver_enable_brackets_the_frame()
+{
+  printf("TX: the RS-485 driver is asserted before byte 0 and released after the last\n");
+  reset();
+  unsigned char req[8]; int n = makeRead(req, SLAVE_ID, 0, 1);
+  wire(req, n);
+  idle(T3_5_US + 100);
+  g_pinLogLen = 0;                      /* only the reply interests us */
+  pump();
+
+  CHECK(Serial.txLen > 0, "a reply was sent");
+
+  int hi = -1, lo = -1;
+  for (int i = 0; i < g_pinLogLen; i++) {
+    if (g_pinLog[i].pin != 2) continue; /* TxEnablePin, set in reset() */
+    if (g_pinLog[i].val == HIGH && hi < 0) hi = i;
+    if (g_pinLog[i].val == LOW) lo = i;
+  }
+  CHECK(hi >= 0, "the driver was enabled");
+  CHECK(lo >= 0, "the driver was released again");
+  CHECK(hi < lo, "enabled before it was released");
+  if (hi >= 0)
+    CHECK_EQ(g_pinLog[hi].txLenAtTime, 0,
+             "enabled before a single byte went out");
+  if (lo >= 0)
+    CHECK_EQ(g_pinLog[lo].txLenAtTime, Serial.txLen,
+             "released only after the whole frame went out");
+}
+
+static void test_reply_arrives_in_the_pass_that_completes_the_frame()
+{
+  printf("TX: the reply goes out on the same pass that sees the gap\n");
+  reset();
+  unsigned char req[8]; int n = makeRead(req, SLAVE_ID, 0, 1);
+  wire(req, n);
+  idle(T3_5_US + 100);
+
+  /* The pre-transmit T3_5 that used to sit in sendPacket() is gone, so
+     nothing stands between detecting the end of the request and putting
+     the reply on the wire. One loop() pass does the lot. */
+  pump();
+  CHECK_EQ(Serial.txLen, 7, "one-register reply, complete, in one pass");
+}
+
 static void test_diagnostics_reset()
 {
   printf("RX: the counters clear on command\n");
@@ -415,6 +462,8 @@ int main(void)
   test_broadcast_is_acted_on_but_silent();
   test_illegal_address_gets_an_exception();
   test_read_complete_hook_fires_after_the_frame();
+  test_driver_enable_brackets_the_frame();
+  test_reply_arrives_in_the_pass_that_completes_the_frame();
   test_diagnostics_reset();
   test_counters_saturate_rather_than_wrap_to_zero();
 
